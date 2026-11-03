@@ -1,8 +1,7 @@
 # Experimental Hy-MT2-30B-A3B (HY-V3) support
 
-This branch is a **feasibility and routing-test stage**, NOT a working PolyStrata backend.
-Do not add `hy_v3` to `Engine::open()` before the implementation is correct:
-it would misleadingly claim support and can silently generate incorrect translations.
+This branch contains an **experimental native HyV3 engine implementation** that has NOT been built with CUDA or checked against the actual GGUF. It is not ready for production translation.
+The `hy_v3` architecture now has an experimental registration in `Engine::open()` solely for development testing. **A successful load does not prove correct inference**; do not merge until both CUDA compilation and llama.cpp parity tests pass.
 
 ## Verified upstream references
 
@@ -19,17 +18,16 @@ it would misleadingly claim support and can silently generate incorrect translat
 - [x] CPU-only deterministic routing smoke test
 - [x] Header-only Python GGUF inspector and synthetic-file tests (both expert-bias spellings)
 - [x] Standalone GGUF metadata and tensor inventory preflight (without loading weights)
-- [ ] Load and validate HY-V3 GGUF metadata and tensors in a new `Engine` subclass
-- [ ] Full attention with Q/K RMS norms, RoPE, KV cache, and output projection
-- [ ] Dense lead block handling and gated SwiGLU
-- [ ] Routed-expert weight caching and always-on shared expert
-- [ ] Correct bias selection, unbiased weights, normalization and scaling on CUDA
-- [ ] Tokenizer/chat template and PolyStrata setup integration
-- [ ] Verify output tokens/logits against llama.cpp on identical prompts
+- [x] Initial model-specific metadata checks and GGUF tensor-loading code in a new `HyV3 : Engine` subclass (NOT RUN on the real GGUF)
+- [x] Implemented full-attention/Q-K RMSNorm/RoPE/KV code by adapting Flint's existing inference paths (NOT parity-tested)
+- [x] Implemented dense lead block and SwiGLU (NOT parity-tested)
+- [x] Connected routed experts to the shared PolyStrata RAM/VRAM cache and inherited shared-expert execution (NOT parity-tested)
+- [x] Connected existing GPU sigmoid/biased-top-k router path with HY-V3 selection bias and scaling (NOT parity-tested)
+- [ ] Model tokenizer/chat template and installer integration
+- [ ] Build actual Windows/Linux CUDA binary and verify output tokens/logits against llama.cpp
 - [ ] Windows CUDA build + RTX 5060 8 GB / RAM 32 GB smoke test
 
-This first test isolates a correctness-sensitive part of the model.
-The routing reference in `src/poly/hy_v3_router.hpp` is **not yet used by the inference engine**.
+The first tests isolate correctness-sensitive parts of the model. The standalone routing reference in `src/poly/hy_v3_router.hpp` is not called by the inference engine; the engine uses the shared GPU `route_rows()` path, which must still be checked numerically against the reference.
 
 ## Run CPU-only test (no model download)
 
@@ -77,3 +75,25 @@ A PASS is not evidence that the model runs or produces correct translations.
 ```sh
 python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
 ```
+
+## Native prototype status (NOT production ready)
+
+`src/poly/hy_v3.cpp` and `hy_v3.hpp` implement a first-pass experimental decoder using
+PolyStrata's tested Flint attention and shared-expert MoE code as a base, adapted to
+Hy-MT2's **full causal attention**, **RoPE on every layer**, **no sink logits**, Q/K RMSNorm,
+one dense leading block and 47 MoE blocks. The decoder is registered in `Engine::open()`
+and added to all three CMake targets that link `engine.cpp`.
+
+The native implementation hard-checks the known Hy-MT2-30B-A3B geometry (48 layers,
+2048 hidden, 32/4 attention heads, head dim 128, 128 experts, 8 active experts,
+6912 dense FFN, 768 expert FFN). It requires selection bias tensors in either of
+the two known GGUF spellings. It disables MTP/NextN draft decoding until correctly ported.
+
+**Unverified:** CUDA compilation, real checkpoint tensor shapes, GPU routing parity,
+exact output logits, tokenizer compatibility, Windows inference, memory and speed.
+Neither the synthetic GGUF CI nor the source-wiring CI checks these. Run the inspector
+on the real checkpoint first; then compile and compare greedy output against llama.cpp.
+Do not merge this draft or use it for subtitle production until those checks pass.
+
+The upstream official configuration is documented at
+https://huggingface.co/tencent/Hy-MT2-30B-A3B/blob/main/config.json .
