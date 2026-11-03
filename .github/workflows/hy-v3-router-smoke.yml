@@ -5,6 +5,11 @@ on:
       - 'src/poly/hy_v3_router.hpp'
       - 'tests/hy_v3_router_test.cpp'
       - 'tools/inspect_hy_v3_gguf.py'
+      - 'src/poly/hy_v3.hpp'
+      - 'src/poly/hy_v3.cpp'
+      - 'src/poly/engine.cpp'
+      - 'CMakeLists.txt'
+      - 'tests/test_hy_v3_native_wiring.py'
       - 'tests/test_hy_v3_gguf.py'
       - '.github/workflows/hy-v3-router-smoke.yml'
   workflow_dispatch:
@@ -17,5 +22,7 @@ jobs:
         run: |
           c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_router_test.cpp -o /tmp/hy_v3_router_test
           /tmp/hy_v3_router_test
+      - name: Check native HY-V3 backend wiring (source-only)
+        run: python -m unittest discover -s tests -p 'test_hy_v3_native_wiring.py' -v
       - name: Inspect synthetic HY-V3 GGUF headers
         run: python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
