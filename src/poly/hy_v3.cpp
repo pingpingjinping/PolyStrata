@@ -1,5 +1,6 @@
-// src/poly/flint.cpp - the layers of HyV3.  The reference for the math is llama.cpp's flint graph
-// (src/models/flint.cpp, a37cc46104).
+// src/poly/hy_v3.cpp - experimental Hy-MT2-30B-A3B decoder trunk.
+// Adapted from PolyStrata's Flint backend. Validate logits/token IDs against
+// llama.cpp src/models/hy-v3.cpp before trusting results.
 #include "hy_v3.hpp"
 
 #include "runtime.hpp"
@@ -125,7 +126,7 @@ void HyV3::load_layer(int il) {
     B.probs_b_dev = upload(b, blk(il, suffix), n_expert_, 1, kF32);
 }
 
-// The caches: a full layer keeps a row a position, a window layer a ring of the rows a call can read.
+// Cache and snapshot machinery inherited from Flint. HY-V3 uses full-attention layers only.
 void HyV3::alloc_caches() {
     ring_ = std::min(opt_.max_context, window_ + rows_);
     keep_ = std::min(window_, ring_);
@@ -269,7 +270,7 @@ void HyV3::store(const float* x, const Block& B, int64_t pos, int n, bool value)
 }
 
 // The attention: queries and keys normed a head, and in a window layer turned by the position; the keys and
-// values into the caches; each head's softmax with its sink.
+// values into the caches; each head's normal causal softmax (no sink logits).
 void HyV3::attn(Block& B, int64_t pos, int n) {
     if (rows_of_) return attn_rows(B, n);
     const long long* at = recording_ ? at_ : nullptr;   // a recorded launch: the tokens from what at_ holds
