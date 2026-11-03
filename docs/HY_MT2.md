@@ -17,6 +17,8 @@ it would misleadingly claim support and can silently generate incorrect translat
 - [x] Fork-specific feature branch, leaving `main` untouched
 - [x] Independent CPU reference for HY-V3 sigmoid/selection-bias/top-k routing
 - [x] CPU-only deterministic routing smoke test
+- [x] Header-only Python GGUF inspector and synthetic-file tests (both expert-bias spellings)
+- [x] Standalone GGUF metadata and tensor inventory preflight (without loading weights)
 - [ ] Load and validate HY-V3 GGUF metadata and tensors in a new `Engine` subclass
 - [ ] Full attention with Q/K RMS norms, RoPE, KV cache, and output projection
 - [ ] Dense lead block handling and gated SwiGLU
@@ -59,3 +61,19 @@ Optional MTP/NextN weights must not be executed as ordinary trunk layers.
 
 Port the full tensor shapes and routing flags from the upstream reference.
 Validate prefill and decode **token-by-token** against llama.cpp before benchmarking.
+
+## Validate an existing downloaded GGUF (no GPU needed)
+
+```powershell
+python tools/inspect_hy_v3_gguf.py "C:\\models\\Hy-MT2-30B-A3B-Q4_K_M.gguf" --json
+```
+
+The inspector reads **only the GGUF header and tensor inventory** (not 18.2 GB of weights).
+It verifies architecture, attention tensors, dense lead block, MoE expert tensor sets and
+both `blk.N.exp_probs_b` and `blk.N.exp_probs_b.bias` names. The latter spelling is seen
+in older HY-V3 quantizations, per https://github.com/ggml-org/llama.cpp/issues/25657.
+A PASS is not evidence that the model runs or produces correct translations.
+
+```sh
+python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
+```
