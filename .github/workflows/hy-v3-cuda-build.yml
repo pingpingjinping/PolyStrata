@@ -1,0 +1,48 @@
+name: HY-V3 Windows CUDA compile (experimental)
+on:
+  pull_request:
+    paths:
+      - 'src/poly/hy_v3.*'
+      - 'src/poly/engine.cpp'
+      - 'src/poly/engine.hpp'
+      - 'CMakeLists.txt'
+      - '.github/workflows/hy-v3-cuda-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cuda-compile:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA Toolkit 13.2 (compile only, no GPU)
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.2.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "nvvm", "crt", "visual_studio_integration"]'
+      - name: Check toolchain
+        shell: pwsh
+        run: |
+          Write-Host "CUDA_PATH=$env:CUDA_PATH"
+          nvcc --version
+          cmake --version
+      - name: Configure native Strata Poly for RTX 5060 (sm_120)
+        shell: pwsh
+        run: |
+          cmake -S . -B build-hyv3 -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=120 -DSTRATA_ORCA_Q4KS_MMQ=OFF -DSTRATA_MMQ_TAB=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile strata-poly target
+        shell: pwsh
+        run: |
+          cmake --build build-hyv3 --target strata-poly --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build-hyv3 -Filter strata-poly.exe -Recurse -File | Select-Object -First 1
+          if (-not $exe) { throw "strata-poly.exe not produced" }
+          Write-Host "Compiled: $($exe.FullName)"
