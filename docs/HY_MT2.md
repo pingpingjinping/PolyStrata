@@ -1,6 +1,6 @@
 # Experimental Hy-MT2-30B-A3B (HY-V3) support
 
-This branch contains an **experimental native HyV3 engine implementation** that has NOT been built with CUDA or checked against the actual GGUF. It is not ready for production translation.
+This branch contains an **experimental native HyV3 engine implementation** whose Windows CUDA 13.2/sm_120 **compile has passed**, but whose output has NOT been checked against the actual GGUF. It is not ready for production translation.
 The `hy_v3` architecture now has an experimental registration in `Engine::open()` solely for development testing. **A successful load does not prove correct inference**; do not merge until both CUDA compilation and llama.cpp parity tests pass.
 
 ## Verified upstream references
@@ -24,7 +24,8 @@ The `hy_v3` architecture now has an experimental registration in `Engine::open()
 - [x] Connected routed experts to the shared PolyStrata RAM/VRAM cache and inherited shared-expert execution (NOT parity-tested)
 - [x] Connected existing GPU sigmoid/biased-top-k router path with HY-V3 selection bias and scaling (NOT parity-tested)
 - [ ] Model tokenizer/chat template and installer integration
-- [ ] Build actual Windows/Linux CUDA binary and verify output tokens/logits against llama.cpp
+- [x] Compile Windows CUDA 13.2 sm_120 binary in GitHub Actions (no GPU)
+- [ ] Run actual model and verify output tokens/logits against llama.cpp
 - [ ] Windows CUDA build + RTX 5060 8 GB / RAM 32 GB smoke test
 
 The first tests isolate correctness-sensitive parts of the model. The standalone routing reference in `src/poly/hy_v3_router.hpp` is not called by the inference engine; the engine uses the shared GPU `route_rows()` path, which must still be checked numerically against the reference.
@@ -89,11 +90,35 @@ The native implementation hard-checks the known Hy-MT2-30B-A3B geometry (48 laye
 6912 dense FFN, 768 expert FFN). It requires selection bias tensors in either of
 the two known GGUF spellings. It disables MTP/NextN draft decoding until correctly ported.
 
-**Unverified:** CUDA compilation, real checkpoint tensor shapes, GPU routing parity,
+**Unverified:** actual model load and runtime tensor shapes, GPU routing parity,
 exact output logits, tokenizer compatibility, Windows inference, memory and speed.
-Neither the synthetic GGUF CI nor the source-wiring CI checks these. Run the inspector
+Neither the synthetic GGUF CI, source-wiring CI, nor Windows **compile-only** CI checks these. Run the inspector
 on the real checkpoint first; then compile and compare greedy output against llama.cpp.
 Do not merge this draft or use it for subtitle production until those checks pass.
 
 The upstream official configuration is documented at
 https://huggingface.co/tencent/Hy-MT2-30B-A3B/blob/main/config.json .
+
+## Windows build result and first native model smoke test
+
+The first Windows CI attempt failed at CMake configuration because the CI runner lacked
+`cublas_dev`. After adding that package, [Windows CUDA 13.2 / sm_120 build #41648984135](https://github.com/pingpingjinping/PolyStrata/actions/runs/41648984135)
+completed successfully, including `strata-poly.exe` verification. The runner has no GPU;
+**this is compile-only success, not inference success**.
+
+A follow-up workflow revision uploads the experimental `strata-poly.exe` as an
+artifact for manual testing (see the most recent `HY-V3 Windows CUDA compile` run).
+Do not replace the normal PolyStrata executable or merge the PR yet.
+
+From a separate PowerShell directory containing the downloaded `strata-poly.exe`:
+
+```powershell
+.\\strata-poly.exe --model "C:\\Users\\yjhmo\\Desktop\\PolyStrata\\Hy-MT2-30B-A3B-Q4_K_M.gguf" --tokens 1 --max-new 1 --max-context 512 --prompt-batch 16 --stage-mib 64 --ram-experts-mib 4096 --no-draft --window 1
+```
+
+Run after stopping existing GPU inference servers to free memory. On Windows, you may need
+CUDA 13 DLL directories on `PATH` (the compiled engine links NVIDIA CUDA libraries).
+If DLLs are missing, capture the exact error instead of mixing random versions.
+This command tests only a single token as a load and inference smoke test. **One generated
+ID does not establish output correctness**; compare full greedy token sequences against
+llama.cpp with identical token IDs in a later step.
