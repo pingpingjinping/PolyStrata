@@ -23,13 +23,16 @@ jobs:
         with:
           cuda: '13.2.0'
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "nvvm", "crt", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvvm", "crt", "visual_studio_integration"]'
       - name: Check toolchain
         shell: pwsh
         run: |
           Write-Host "CUDA_PATH=$env:CUDA_PATH"
           nvcc --version
           cmake --version
+          $cuBlasLib = Join-Path $env:CUDA_PATH "lib/x64/cublas.lib"
+          if (-not (Test-Path $cuBlasLib)) { throw "Missing cuBLAS import library: $cuBlasLib" }
+          Write-Host "cuBLAS import library found: $cuBlasLib"
       - name: Configure native Strata Poly for RTX 5060 (sm_120)
         shell: pwsh
         run: |
