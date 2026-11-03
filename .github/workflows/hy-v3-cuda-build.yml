@@ -49,3 +49,10 @@ jobs:
           $exe = Get-ChildItem -Path build-hyv3 -Filter strata-poly.exe -Recurse -File | Select-Object -First 1
           if (-not $exe) { throw "strata-poly.exe not produced" }
           Write-Host "Compiled: $($exe.FullName)"
+      - name: Upload experimental strata-poly executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyV3-Windows-sm120-strata-poly-exe
+          path: build-hyv3/**/strata-poly.exe
+          if-no-files-found: error
+          retention-days: 14
