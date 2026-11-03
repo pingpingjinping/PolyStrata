@@ -1,0 +1,17 @@
+name: HY-V3 router smoke test
+on:
+  pull_request:
+    paths:
+      - 'src/poly/hy_v3_router.hpp'
+      - 'tests/hy_v3_router_test.cpp'
+      - '.github/workflows/hy-v3-router-smoke.yml'
+  workflow_dispatch:
+jobs:
+  router:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_router_test.cpp -o /tmp/hy_v3_router_test
+          /tmp/hy_v3_router_test
