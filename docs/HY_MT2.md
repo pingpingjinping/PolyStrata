@@ -219,8 +219,10 @@ Close with `Ctrl+C`. The default server is bound to loopback only and the
 existing port 8080 is never changed.
 
 The native test uses 4,096 context tokens (adjust up to 8,192 with
-`--context 8192` if memory permits), a 32-token prompt batch, 64 MiB
-staging buffer, **all off-VRAM experts kept in host RAM by default** (instead of the
+`--context 8192` if memory permits), a **1,024-token prompt batch** (previously 32),
+**128 MiB staged experts** with a **2,048 MiB temporary expansion during long prompt reads**
+(using VRAM borrowed from the expert cache), and **6 prompt checkpoints** (previously 0),
+**all off-VRAM experts kept in host RAM by default** (instead of the
 former 4,096 MiB cap), no speculative MTP drafts,
 `--window 1` and the existing CUDA 13 DLL directory in the PolyStrata venv.
 The web default temperature is 0.7 (official 30B recommendation); choose
@@ -265,3 +267,31 @@ token count, and report prompt and generation speeds independently. Full RAM
 residency may reduce disk reads but does not guarantee speedup when CPU expert
 matrix operations are the bottleneck. Check overall free memory and avoid
 forcing Windows to page other apps out.
+
+### Prompt prefill optimization (2026-11-04)
+
+On the 100-line Japanese ASS test, Hy-MT2 returned 100 numbered Korean lines,
+1,327 output tokens, and 68.3 **generation** tok/s with the original experimental
+web options (`--prompt-batch 32 --stage-mib 64 --prompt-cache 0`). These figures
+say nothing about prefill speed; compare the web UI's **prompt tok/s** separately.
+The original PolyStrata setup uses the native poly engine's 1,024-token default
+and may select 2,048 when its VRAM estimation allows. It does **not** imply that
+Gemma 4 and Hy-MT2 have identical VRAM or speed characteristics.
+
+The isolated Hy-MT2 launcher now defaults to `--prompt-batch 1024`, `--stage-mib
+128`, `--stage-read-mib 2048`, and `--prompt-cache 6`. These values rely on
+native engine dynamic staging of expert cache VRAM during prefill; actual stability
+on RTX 5060 8GB and the resulting prompt throughput still need measurement.
+A larger prompt batch may reduce free expert cache VRAM and change decode speed.
+If startup reports VRAM allocation errors, do not rebuild the EXE; restart with:
+
+```powershell
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 512 --stage-mib 64 --stage-read-mib 0
+```
+
+If that still fails, try `--prompt-batch 256`. The original 32-token mode can be
+restored with `--prompt-batch 32 --stage-mib 64 --stage-read-mib 0 --prompt-cache 0`.
+Leave `--ram-experts-mib` at its fast unlimited default, `-1`.
+Before deciding to keep the defaults, compare prefill tok/s and decode tok/s on
+the same 100-line input and note memory. This is still experimental and does
+not change the installed Gemma 4 PolyStrata settings or merge the PR.
