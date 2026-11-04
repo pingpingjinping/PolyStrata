@@ -4,7 +4,7 @@ Native `hy_v3` support runs through `strata-poly` and the existing PolyStrata
 web/API server. The feature stays opt-in in this fork. **Keep PR #1 a draft
 until the real-device gates below pass.**
 
-## Verified status, 2026-11-04 KST
+## Verified status, 2026-11-05 KST
 
 | Area | Evidence | Remaining gate |
 | --- | --- | --- |
@@ -446,6 +446,55 @@ The grouped helper header and `main.cpp` passed host syntax checks, and a
 CPU-only CMake configure succeeded. These are not GPU parity results. CUDA
 compilation is delegated to the Windows CI build; HIP/SYCL validation was not
 available locally and this PR remains a Draft.
+
+#### User device results (2026-11-05 KST)
+
+At native revision `a633c047`, the Windows build and compatibility CI passed:
+[EXEs](https://github.com/pingpingjinping/PolyStrata/actions/runs/41840106604),
+[CPU/Python](https://github.com/pingpingjinping/PolyStrata/actions/runs/41840106420).
+The user then ran the GPU checker on **NVIDIA GeForce RTX 5060**, slots warp
+mode 0, and reported **PASS: 24 cases / 122,880 output values bit-identical,
+eager + graph replay**. This is actual device evidence for the synthetic
+projection check, not whole-model/reference-engine parity.
+
+Same-new-EXE reports with batch 2048, 6 threads, CPU down32 enabled, context
+4096, requested/web Temperature 0, expert learning off and the same 100-line
+input as instructed:
+
+| QKV grouping | Profiling | Generation tok/s | CPU host ms/step | Router wait ms/step | Decode wall ms/step |
+| --- | --- | --- | --- | --- | --- |
+| Off | On | 75.6 | 5.970 | 4.652 | 13.245 |
+| On | On | 77.0 | 5.901 | 4.596 | 12.996 |
+| Off | Off | 75.1 | — | — | — |
+| On | Off | 76.4 | — | — | — |
+
+| QKV grouping | QKV + preparation GPU ms/step | Attention core GPU ms/step | Output GPU ms/step | Aggregate attention GPU ms/step |
+| --- | --- | --- | --- | --- |
+| Off | 1.555 | 1.328 | 0.934 | 3.818 |
+| On | 1.476 | 1.279 | 0.922 | 3.677 |
+
+All four requests reported **1,322 output tokens, 73.6% expert hits, stop and
+cancel=False**. The two profiled runs each had 1,321 decode steps, 83 GPU
+samples and 0.002 ms/step collection time. The GPU stage sum can differ from
+the aggregate by 0.001 ms because the console rounds each field separately.
+Host phases overlap GPU work and must not be added to the attention values.
+
+The unprofiled pair reports **+1.7% generation throughput** for QKV grouping;
+the profiled pair reports +1.9%, with QKV preparation about 5.1% shorter.
+Other GPU intervals also shortened, so run variation/clocks can contribute:
+do not attribute every observed difference to the grouped kernel. These are
+short single pairs, not repeated medians or statistical evidence. Output
+token counts alone do not prove equal generated text/IDs. Keep the feature
+opt-in and retain the full-model/reference parity gate. Do not add this
+percentage to the earlier CPU experiment from a different native build.
+
+The next practical combination can re-enable `--learn-experts` while retaining
+6 threads, CPU down32 and QKV grouping, with profiling off. A pre-existing
+`.hy-v3-web/hy-mt2-experts.bin` is read on restart; if absent, the first run only
+starts collecting the profile, and another restart is needed to apply it.
+This changes cache ranking and is separate from the QKV-only comparison above.
+No result for that combined cache-learning run has been collected yet. These
+measurement/documentation updates require no new executable.
 
 ### Remaining gates
 
