@@ -1,7 +1,10 @@
 """Tests for the header-only HY-V3 GGUF preflight (no actual model required)."""
 import importlib.util
+import json
 from pathlib import Path
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -60,6 +63,35 @@ def fixture(path, alias="bare"):
 
 
 class PreflightTests(unittest.TestCase):
+    def test_projection_formats_count_mixed_trunk_layers_and_exclude_mtp(self):
+        tensors = {}
+        for il in range(3):
+            tensors[f"blk.{il}.attn_q.weight"] = dict(type=12, shape=[2048, 4096])
+        tensors["blk.1.attn_q.weight"]["type"] = 14
+        tensors["blk.3.attn_q.weight"] = dict(type=8, shape=[2048, 4096])  # MTP
+        tensors["blk.0.attn_k.weight"] = dict(type=999, shape=[2048, 512])
+        result = mod.projection_types(tensors, 3)
+        self.assertEqual(result["attn_q.weight"], [
+            dict(type_id=12, type_name="Q4_K", shape=[2048, 4096], layer_count=2),
+            dict(type_id=14, type_name="Q6_K", shape=[2048, 4096], layer_count=1)])
+        self.assertEqual(result["attn_k.weight"][0]["type_name"], "GGML type 999")
+        self.assertEqual(result["attn_v.weight"], [])
+        with self.assertRaises(mod.GGUFError):
+            mod.projection_types(tensors, 1_000_000)
+
+    def test_projection_report_is_opt_in_and_uses_header_only_fixture(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "fake.gguf"
+            fixture(p)  # no weight data follows the header
+            command = [sys.executable, str(Path(mod.__file__)), str(p), "--json"]
+            baseline = json.loads(subprocess.check_output(command, text=True))
+            self.assertNotIn("attention_projections", baseline)
+            enabled = json.loads(subprocess.check_output(command + ["--projection-types"], text=True))
+            groups = enabled.pop("attention_projections")
+            self.assertEqual(enabled, baseline)
+            self.assertEqual(groups["attn_q.weight"], [
+                dict(type_id=0, type_name="F32", shape=[2048, 2048], layer_count=48)])
+
     def test_hy_v3_with_bare_bias(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "fake.gguf"

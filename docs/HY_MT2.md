@@ -237,6 +237,34 @@ attention operations/order match the prior source. GPU timestamps and real
 output parity still require device validation; no CUDA runtime, HIP or SYCL
 build/runtime validation was available locally. Keep the PR a Draft.
 
+The Windows CUDA build and compatibility CI passed at native revision
+`f6a3a638` ([Windows EXE](https://github.com/pingpingjinping/PolyStrata/actions/runs/41831932345),
+[CPU/Python](https://github.com/pingpingjinping/PolyStrata/actions/runs/41831932330)).
+The user then reported these version-2 GPU sample averages on the same PC:
+
+| Attention stage | GPU ms/step | Share of aggregate attention |
+| --- | --- | --- |
+| QKV + head norm/RoPE/KV store | 1.580 | 40.2% |
+| Attention core | 1.373 | 34.9% |
+| Output projection | 0.979 | 24.9% |
+| Aggregate attention | 3.932 | 100% |
+
+The stages sum to the reported aggregate. The request reported 1,320 output
+tokens, 72.8 generation tok/s, `stop`, `cancel=False`, and 75.2% expert hits;
+the profile had 1,319 decode steps and 83 GPU samples. CPU expert host phase
+was 5.847 ms/step, router host wait 5.216, decode wall 13.748, and collection
+0.002. The host fields overlap GPU work and must not be summed with the table.
+QKV preparation plus output is about 65% of sampled attention time, but QKV
+preparation also includes norms, RoPE, cache stores and event overhead: this
+does not attribute all of it to matrix multiplication. The core alone is about
+35%, so attention-kernel work is only one optimization candidate.
+
+These are diagnostic timestamps, not an unprofiled throughput comparison.
+The preceding 76.1 tok/s run had a different output count (1,322), expert hit
+rate (73.6%) and no profiling. The new run cannot establish a regression or
+quantify profiler overhead. Output IDs/text and exact request/config hashes
+were not captured with these console reports.
+
 The first version supports **CUDA, one GPU, one sequence, window 1, lookup 0**.
 Other model families and unsupported profile combinations fail explicitly; HIP
 profiling is not supported. Without the flag, no timing events are allocated or
@@ -320,6 +348,28 @@ cmake -S . -B build-hy-cpu -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DST
 cmake --build build-hy-cpu --target poly_hy_cpu_down32_test --parallel 2
 ./build-hy-cpu/poly_hy_cpu_down32_test
 ```
+
+### Step 3: inspect actual projection tensor formats (no new EXE)
+
+Before selecting a matrix-kernel or launch-fusion experiment, inspect the
+actual Q/K/V/output tensor types and dimensions. The whole file being called
+Q4_K_M does not imply every projection has the same tensor format. Existing
+paired/slots kernels have input, output, type and token-count constraints, so
+an environment switch alone does not prove a particular path can run.
+
+```powershell
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\inspect_hy_v3_gguf.py "$HOME\Desktop\PolyStrata\Hy-MT2-30B-A3B-Q4_K_M.gguf" --projection-types
+```
+
+Send the four `attn_q.weight`, `attn_k.weight`, `attn_v.weight` and
+`attn_output.weight` lines. The optional report groups tensor type and shape
+across trunk layers (excluding MTP), rather than assuming layer zero represents
+all layers. It reads only the GGUF header and uses no GPU; model weight bytes
+are not loaded. `--json --projection-types` adds the same data under
+`attention_projections`; without the new flag, the existing report is unchanged.
+This is metadata for choosing the next experiment, not a speed/quality test.
 
 ### Remaining gates
 

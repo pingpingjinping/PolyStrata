@@ -7,6 +7,7 @@ This is a preflight checker, not a PolyStrata backend or a numerical parity test
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import struct
 import sys
@@ -224,14 +225,36 @@ def inspect(meta: dict, tensors: dict) -> dict:
     }
 
 
+def projection_types(tensors: dict, trunk_layers: int) -> dict:
+    """Report actual tensor formats/shapes across trunk layers, excluding MTP."""
+    if not 0 < trunk_layers <= 200:
+        raise GGUFError("projection inspection requires 1..200 trunk layers")
+    type_names = {0: "F32", 1: "F16", 8: "Q8_0", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 30: "BF16"}
+    result = {}
+    for suffix in ("attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight"):
+        counts = Counter()
+        for il in range(trunk_layers):
+            t = tensors.get(f"blk.{il}.{suffix}")
+            if t is not None:
+                counts[(t["type"], tuple(t["shape"]))] += 1
+        result[suffix] = [dict(type_id=kind, type_name=type_names.get(kind, f"GGML type {kind}"),
+                               shape=list(shape), layer_count=count)
+                          for (kind, shape), count in sorted(counts.items())]
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gguf", type=Path)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--projection-types", action="store_true",
+                        help="show Q/K/V/output tensor formats and shapes across trunk layers (header only)")
     args = parser.parse_args()
     try:
         meta, tensors = read_header(args.gguf)
         report = inspect(meta, tensors)
+        if args.projection_types and report["ok"]:
+            report["attention_projections"] = projection_types(tensors, report["trunk_layers"])
     except (OSError, ValueError, struct.error, OverflowError) as exc:
         report = {"ok": False, "errors": [str(exc)]}
     if args.json:
@@ -246,6 +269,9 @@ def main() -> int:
             print("  WARN:", w)
         for e in report.get("errors", []):
             print("  ERROR:", e)
+        for name, groups in report.get("attention_projections", {}).items():
+            detail = "; ".join(f"{g['type_name']} {g['shape']} x{g['layer_count']} layers" for g in groups)
+            print(f"  {name}: {detail or 'missing'}")
         print(report.get("note", ""))
     return 0 if report["ok"] else 1
 
