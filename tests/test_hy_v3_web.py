@@ -35,6 +35,13 @@ class HyV3WebConfigTest(unittest.TestCase):
             self.assertEqual(cfg["args"][cfg["args"].index("--model") + 1],
                              str(root / "Hy-MT2-30B-A3B-Q4_K_M.gguf"))
             self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "4096")
+            self.assertEqual(cfg["args"][cfg["args"].index("--ram-experts-mib") + 1], "-1")
+            cfg_limited = build_config(
+                exe=root / "strata-poly.exe", model=root / "Hy-MT2-30B-A3B-Q4_K_M.gguf",
+                tokenizer=root / "pack" / "tokenizer", runtime=root,
+                port=18081, context=4096, lib_dirs=[], temperature=0,
+                ram_experts_mib=4096)
+            self.assertEqual(cfg_limited["args"][cfg_limited["args"].index("--ram-experts-mib") + 1], "4096")
             self.assertIn("--no-draft", cfg["args"])
             self.assertTrue(cfg["tokenizer"].endswith("tokenizer"))
             self.assertNotIn("8080", json.dumps(cfg))
