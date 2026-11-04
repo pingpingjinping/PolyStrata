@@ -148,3 +148,41 @@ This establishes native loading and sustained token generation but **not**
 text correctness, translation quality or representative benchmark speed.
 The next gate is identical-token greedy parity with llama.cpp. Do not
 merge or replace the user's production PolyStrata environment yet.
+
+## One-window Japanese-to-Korean test (no llama.cpp)
+
+A **standalone Tkinter UI** is in `tools/hy_v3_translate_gui.py`. This is an
+experimental, direct client for `strata-poly.exe --serve`: it loads the real GGUF
+tokenizer, follows Tencent's one-user-message no-thinking template, uses the
+model's special EOS tokens, streams decoded Korean output, and keeps the
+native engine loaded between translations. It does **not** replace PolyStrata's
+production settings or require the regular web server.
+
+Run from the **experimental clone** on Windows:
+
+```powershell
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_translate_gui.py
+```
+
+The defaults match `Desktop\PolyStrata\strata-poly.exe` and
+`Desktop\PolyStrata\Hy-MT2-30B-A3B-Q4_K_M.gguf`. To override:
+
+```powershell
+python .\tools\hy_v3_translate_gui.py --exe "D:\test\strata-poly.exe" --model "D:\models\Hy-MT2-30B-A3B-Q4_K_M.gguf"
+```
+
+The UI finds the existing `nvidia\cu13\bin\x86_64` CUDA 13 pip-wheel DLL
+folder automatically. The Python interpreter must have the `regex` package,
+which the normal PolyStrata .venv already uses. A standard Python for Windows
+provides `tkinter`.
+
+The Hunyuan pretokenizer uses the Qwen2 regex in llama.cpp; experimental support
+was added in `tools/strata_tokenizer.py`. Unsupported GGUF pretokenizers cause
+an explicit error rather than silently corrupting the input. The visible
+text being translated can be checked directly in the GUI.
+
+First try a single simple Japanese sentence. Greedy temperature=0 is chosen
+for debugging; the 30B model card recommends 0.7 for normal use. **Native
+model output correctness is still unverified and the PR stays a draft.**
