@@ -7,6 +7,7 @@ on:
       - 'tools/inspect_hy_v3_gguf.py'
       - 'tools/strata_tokenizer.py'
       - 'tools/hy_v3_translate_gui.py'
+      - 'tests/test_hy_v3_tokenizer.py'
       - 'src/poly/hy_v3.hpp'
       - 'src/poly/hy_v3.cpp'
       - 'src/poly/engine.cpp'
@@ -30,3 +31,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
       - name: Syntax check native translation test GUI
         run: python -m py_compile tools/hy_v3_translate_gui.py tools/strata_tokenizer.py
+      - name: Regression test Hunyuan dense pre-tokenizer
+        run: |
+          python -m pip install --disable-pip-version-check regex
+          python -m unittest discover -s tests -p 'test_hy_v3_tokenizer.py' -v
