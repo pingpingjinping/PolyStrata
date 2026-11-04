@@ -94,6 +94,12 @@ The -1 setting may reduce disk reads, but cannot remove CPU expert compute.
   (`src/poly/fattn.cu`); Hy has dimension 128 and uses `attend_batch`/`attend`.
   Setting `STRATA_FATTN=1` alone does not accelerate Hy. Extending those kernels
   is a separate native change requiring CUDA/HIP builds and numerical checks.
+  The existing `attend()` dispatch already has a fused split/join kernel for
+  dimension 128 and eight query heads per KV head. Hy's 32/4 head geometry
+  matches it when workspace fits and there is no window/ring/whole-context
+  override or quantized KV. This is a source-dispatch finding; individual
+  kernel execution has not been traced on the user's GPU. The attention timer
+  also includes Q/K/V projections and output projection, not just attention.
 - Batch 512/1024/2048 trades prefill work against expert-cache space. Measure
   both prompt and generation speed; do not choose a winner by prompt speed alone.
 - Hy's fp16 KV cache uses 96 KiB per context position across all layers:
@@ -217,7 +223,8 @@ its console. No new stdout protocol message or common web-server change is neede
 `--cpu-down32` passes native `--hy-v3-cpu-down32`. It changes only the CPU
 down-projection work distribution from 16 output rows per task to 32: at Hy's
 2048-wide hidden state, 128 down tasks become 64. Fewer tasks may reduce worker
-bookkeeping but can also reduce load balancing; a speedup is not established.
+bookkeeping but can also reduce load balancing. The small user-reported
+improvement below is preliminary, not a validated default for other hardware.
 The stock CPU function is retained unchanged. The experimental copy uses the
 same quantizers, dot products, activation math and per-output expert sum order.
 The option defaults off and is rejected for other model architectures.
@@ -229,18 +236,42 @@ Run a baseline on that same new executable first:
 ```powershell
 cd "$HOME\PolyStrata-HyV3-Test"
 git pull
-& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --learn-experts --profile-decode
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --profile-decode
 ```
 
 Then stop the server and append **`--cpu-down32`** to the same command. Verify
 the native log says `HY-V3 CPU down tasks: 32 rows`. Use the same new chat input,
-web Temperature 0, expert-profile contents and cache warm-up state for both.
-Expert learning writes its profile on answers/exit, so retain a copy of
-`.hy-v3-web/hy-mt2-experts.bin` before the baseline and restore it after stopping
-the server before the enabled run. Repeat the pair if the change is small.
-Report each `done` and profile line and compare output too. Any promising
-result still needs a same-build pair without profiling for the final throughput.
+web Temperature 0 and cache warm-up state for both. Leave `--learn-experts`
+off for both runs, as in the command above, to exclude learned cache ranking
+and profile updates from this comparison; this does not delete its saved file.
+Repeat the pair if the change is small. Report each `done` and profile line and
+compare output too. Remove `--profile-decode` from both commands for a final
+pair without profiling.
 Remove `--cpu-down32` to return to the stock scheduling.
+
+User-reported results on the same Windows RTX 5060 8 GB / 32 GB RAM PC, native
+revision `8625d11c`, prompt batch 2048, 6 CPU threads, context 4096, requested
+temperature 0, expert learning off, and the same 100-line input as instructed:
+
+| Run order | Down rows/task | Profiling | Generation tok/s | CPU host ms/step | Attention GPU ms/step | Router wait ms/step | Decode wall ms/step |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 (A) | 16 | On | 73.8 | 6.338 | 3.418 | 4.685 | 13.568 |
+| 2 (B) | 32 | On | 75.5 | 6.048 | 3.398 | 4.700 | 13.259 |
+| 3 (A repeat) | 16 | On | 74.6 | 6.276 | 3.355 | 4.661 | 13.417 |
+| 4 (A) | 16 | Off | 74.9 | — | — | — | — |
+| 5 (B) | 32 | Off | 76.1 | — | — | — | — |
+
+Every run reported 1,322 output tokens, `stop`, `cancel=False`, and 73.6% expert
+cache hits. Profiled runs each had 1,321 decode steps and 83 GPU samples. The
+unprofiled pair is **+1.6% reported generation throughput** for 32 rows; the
+profiled B is +1.2% to +2.3% against the two A runs. CPU host phase is shorter
+in that B run, but it includes overlap and is not exclusive CPU compute time.
+This is one short unprofiled pair, not repeated medians or a statistical claim.
+The console's rounded whole-second duration is 19 seconds for both unprofiled
+runs; percentages use the reported tok/s. Equal output counts and hit rates
+do not establish identical token IDs, translated text or numerical parity.
+Keep the option experimental/default-off; no fresh EXE is needed for these
+documentation updates.
 
 The standalone CPU test uses the pinned real ggml backend, synthetic quantized
 Q4_K/Q5_K/Q6_K and F32 matrices, Hy-sized 2048/768 dimensions and partial output
@@ -251,7 +282,10 @@ Local Release CPU build passed **720 checks**, all **31 HY-V3 Python tests**
 passed, and the existing regression suite ran **480 tests: 477 passed, 3 skipped**
 for absent reference tokenizer data. Router/profile accounting tests and the
 host `main.cpp` syntax check passed. CUDA runtime, HIP and SYCL were unavailable
-locally; the new Windows CUDA compile is a separate CI gate.
+locally. At native revision `8625d11c`, both the Windows sm_120 CUDA compile and
+compatibility CI (including the real ggml CPU parity job) passed:
+[Windows build](https://github.com/pingpingjinping/PolyStrata/actions/runs/41826631122),
+[CPU/Python checks](https://github.com/pingpingjinping/PolyStrata/actions/runs/41826631069).
 
 To reproduce the quantized CPU check without a GPU:
 
