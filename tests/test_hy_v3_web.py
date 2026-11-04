@@ -36,6 +36,19 @@ class HyV3WebConfigTest(unittest.TestCase):
                              str(root / "Hy-MT2-30B-A3B-Q4_K_M.gguf"))
             self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "4096")
             self.assertEqual(cfg["args"][cfg["args"].index("--ram-experts-mib") + 1], "-1")
+            self.assertEqual(cfg["args"][cfg["args"].index("--prompt-batch") + 1], "1024")
+            self.assertEqual(cfg["args"][cfg["args"].index("--stage-mib") + 1], "128")
+            self.assertEqual(cfg["args"][cfg["args"].index("--stage-read-mib") + 1], "2048")
+            self.assertEqual(cfg["args"][cfg["args"].index("--prompt-cache") + 1], "6")
+            cfg_tight = build_config(
+                exe=root / "strata-poly.exe", model=root / "Hy-MT2-30B-A3B-Q4_K_M.gguf",
+                tokenizer=root / "pack" / "tokenizer", runtime=root,
+                port=18081, context=4096, lib_dirs=[], temperature=0,
+                prompt_batch=256, stage_mib=64, stage_read_mib=0, prompt_cache=0)
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--prompt-batch") + 1], "256")
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--stage-mib") + 1], "64")
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--stage-read-mib") + 1], "0")
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--prompt-cache") + 1], "0")
             cfg_limited = build_config(
                 exe=root / "strata-poly.exe", model=root / "Hy-MT2-30B-A3B-Q4_K_M.gguf",
                 tokenizer=root / "pack" / "tokenizer", runtime=root,
