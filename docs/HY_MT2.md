@@ -1,6 +1,6 @@
 # Experimental Hy-MT2-30B-A3B (HY-V3) support
 
-This branch contains an **experimental native HyV3 engine implementation** whose Windows CUDA 13.2/sm_120 **compile has passed**, but whose output has NOT been checked against the actual GGUF. It is not ready for production translation.
+This branch contains an **experimental native HyV3 engine implementation** whose Windows CUDA 13.2/sm_120 **compile has passed**, but whose native decode has been smoke-tested on the official Q4_K_M GGUF, but whose output correctness has NOT been checked against llama.cpp. It is not ready for production translation.
 The `hy_v3` architecture now has an experimental registration in `Engine::open()` solely for development testing. **A successful load does not prove correct inference**; do not merge until both CUDA compilation and llama.cpp parity tests pass.
 
 ## Verified upstream references
@@ -25,8 +25,9 @@ The `hy_v3` architecture now has an experimental registration in `Engine::open()
 - [x] Connected existing GPU sigmoid/biased-top-k router path with HY-V3 selection bias and scaling (NOT parity-tested)
 - [ ] Model tokenizer/chat template and installer integration
 - [x] Compile Windows CUDA 13.2 sm_120 binary in GitHub Actions (no GPU)
-- [ ] Run actual model and verify output tokens/logits against llama.cpp
-- [ ] Windows CUDA build + RTX 5060 8 GB / RAM 32 GB smoke test
+- [x] Load actual Q4_K_M model and generate 1 then 16 tokens on RTX 5060 8 GB (load/decode smoke test only)
+- [ ] Verify output tokens/logits against llama.cpp on identical input token IDs
+- [x] Windows CUDA build + RTX 5060 8 GB / RAM 32 GB first smoke test (numerical correctness NOT yet established)
 
 The first tests isolate correctness-sensitive parts of the model. The standalone routing reference in `src/poly/hy_v3_router.hpp` is not called by the inference engine; the engine uses the shared GPU `route_rows()` path, which must still be checked numerically against the reference.
 
@@ -122,3 +123,28 @@ If DLLs are missing, capture the exact error instead of mixing random versions.
 This command tests only a single token as a load and inference smoke test. **One generated
 ID does not establish output correctness**; compare full greedy token sequences against
 llama.cpp with identical token IDs in a later step.
+
+
+## First real-device results (reported 2026-11-04 KST)
+
+Windows RTX 5060 8 GB, 32 GB system RAM, official
+`Hy-MT2-30B-A3B-Q4_K_M.gguf`, with CUDA 13 DLL path supplied from the
+PolyStrata Python venv. The GGUF inspector reported 48 layers, 1 dense,
+47 MoE, 766 tensors, 47 selection-bias tensors named `exp_probs_b`,
+no warnings/errors.
+
+`strata-poly.exe --tokens 1 --max-new 16 --max-context 512 --prompt-batch 16
+--stage-mib 64 --ram-experts-mib 4096 --no-draft --window 1 --temperature 0`
+
+produced:
+- Loaded in 2.1 s (warm cache); initial one-token run loaded in 8.0 s.
+- 1,991 of 6,016 routed experts resident in 5.3 GiB of VRAM.
+- 12 CPU threads; 4,096 MiB explicitly reserved for external experts.
+- 16 generated token IDs: `206,341,245,636,13,206,478,628,206,15271,206,279,206,252,206,26887`.
+- Measured 7.86 generated tokens/s over a 16-token sample.
+- GPU expert hit share 48.5%, 478 experts swapped, 119.5 ms/token CPU-expert time.
+
+This establishes native loading and sustained token generation but **not**
+text correctness, translation quality or representative benchmark speed.
+The next gate is identical-token greedy parity with llama.cpp. Do not
+merge or replace the user's production PolyStrata environment yet.
