@@ -553,6 +553,7 @@ Engine::~Engine() {
     for (int j = 0; j < n_swap_; ++j)
         if (swap_[(size_t) j].done) cudaEventDestroy(swap_[(size_t) j].done);
     for (void* g : graphs_) cudaGraphExecDestroy((cudaGraphExec_t) g);
+    for (void* e : timing_events_) cudaEventDestroy((cudaEvent_t) e);
     blas_destroy(blas_);
     if (swap_st_) cudaStreamDestroy(cs(swap_st_));
     if (up_) cudaStreamDestroy(cs(up_));
@@ -570,6 +571,14 @@ void* Engine::dmalloc(size_t bytes, const char* what) {
     }
     dev_allocs_.push_back(p);
     return p;
+}
+
+void* Engine::timing_event() {
+    cudaEvent_t event = nullptr;
+    ck(cudaEventCreate(&event), "HY-V3 timing event");
+    try { timing_events_.push_back(event); }
+    catch (...) { cudaEventDestroy(event); throw; }
+    return event;
 }
 
 void* Engine::hmalloc(size_t bytes, const char* what) {
@@ -1178,6 +1187,11 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
     const Shards file(o.model);
     const MetaValue* arch = file.get("general.architecture");
     const std::string name = arch ? arch->s : std::string();
+    if (o.hy_v3_profile && (name != "hy_v3" || !o.layer_split.empty() || o.batch != 0 || o.window != 1 || o.dump))
+        throw std::runtime_error("--hy-v3-profile requires a HY-V3 model, one GPU/sequence, --window 1 and no --dump");
+#if defined(STRATA_USE_HIP)
+    if (o.hy_v3_profile) throw std::runtime_error("--hy-v3-profile is CUDA-only in this version");
+#endif
     // Clover is a qwen35moe model trained to also guess a block of tokens at once (Qwen35)
     const bool qwen35 = name == "qwen35moe" || name == "clover_moe";
     if (o.kv_format == KvFmt::kQ8_0 && !qwen35 && name != "kolibri1")

@@ -19,7 +19,12 @@ The 68.3 tok/s report used the former experimental settings (batch 32,
 stage 64 MiB, no prompt checkpoints). The first 16-token ID-only smoke test
 reported 7.86 tok/s and 48.5% VRAM expert hits; it was a different workload
 and is not a translation benchmark. Neither number proves numerical parity.
-Current larger-batch defaults have not yet been measured on that PC.
+Later user single-run reports (same 100-line task, web sampling not initially
+held fixed): batch 512 at 65.5 tok/s / 78.5% expert hits; 1024 at 66.4 / 76.0%;
+2048 at 68.1 / 75.2%. After explicitly setting web Temperature=0, batch 2048
+reported 69.4 tok/s. An expert-learning-enabled run later reported 76.0 tok/s
+and 75.2% hits, but whether that was after profile reload was not established.
+These reports do not yet isolate causality or establish a validated new default.
 
 References:
 
@@ -139,6 +144,59 @@ whole correctly translated input as well as tok/s; tokenizers differ across mode
 
 ## Release gates and remaining stability checks
 
+### Step 1: generation bottleneck diagnostics (opt-in)
+
+`--profile-decode` enables native `--hy-v3-profile` in the isolated launcher.
+**Download the new Windows sm_120 `strata-poly.exe` CI artifact first**; the
+previous executable does not recognize the new flag. Keep the existing model,
+tokenizer and CUDA DLL environment. Close the old server before replacing its EXE.
+
+```powershell
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --temperature 0 --learn-experts --profile-decode
+```
+
+Set the web Chat Temperature to **0 and save it**: a browser-stored request
+temperature overrides the launcher's default. Use a new conversation, the same
+100 Japanese lines and no other API clients. Send the final `[hy-v3 profile]`
+line together with the normal `done` line. Remove `--profile-decode` for normal use.
+
+The profile covers **decode eval steps only**: prefill and its final one-token
+eval are excluded. The first generated token is picked from prefill logits and
+needs no decode eval, so `decode_steps` is normally generated tokens minus one.
+An answer with no decode eval emits a zero-step note rather than a fake rate.
+
+| Field | What it measures |
+| --- | --- |
+| attention GPU | CUDA event interval across each layer's Q/K/V projection, Q/K norm, RoPE, KV store, attention and output projection; summed over 48 layers and averaged over sampled decode steps |
+| CPU expert host phase | Existing host elapsed time in `cpu_experts()`, including parallel GPU-launch callbacks, weight-read waits and worker synchronization; not CPU utilization or exclusive CPU compute time |
+| router host wait | Existing host time waiting for router-copy readiness; can include preceding queued GPU work, not just the router kernel |
+| decode wall | Whole generation-loop elapsed time per model eval step, including sampling, streaming and profiling overhead |
+| profile collection | Host time spent reading completed timing events per step; excludes GPU event-node overhead |
+
+**These intervals overlap. Do not add them or subtract their sum from wall time.**
+Attention time is a stream interval, not a sum of exclusive kernel durations, and
+does not identify which attention kernel is slow. Cached experts, shared experts,
+logits, transfers and all other work are not individually timed in this first step.
+
+GPU samples are taken on steps 1, 17, 33, ... . Profile mode uses distinct graph
+keys for sampled and ordinary heads, so the intervening steps execute recordings
+without timing nodes. `gpu_samples` reports the actual sample count; host phase
+averages cover all decode steps. Timing events use external event-record nodes;
+graph replay stays enabled. Events are read after the ordinary logits synchronization,
+without adding layer-by-layer stream waits. Profiling itself adds event nodes and
+host calls, so its tok/s is diagnostic and must not be presented as an optimized
+speed measurement. Neither a speedup nor output parity has been measured yet.
+
+The first version supports **CUDA, one GPU, one sequence, window 1, lookup 0**.
+Other model families and unsupported profile combinations fail explicitly; HIP
+profiling is not supported. Without the flag, no timing events are allocated or
+recorded and existing model math/graphs/protocol fields are unchanged. Profile
+JSON goes to native stderr, while the launcher tails just those new lines into
+its console. No new stdout protocol message or common web-server change is needed.
+
+### Remaining gates
+
 - [ ] Same-token greedy Hy output/logit comparison against llama.cpp, same GGUF.
 - [ ] Old/new Gemma 4 and Qwen3.6 real loading, complete translation, web UI and
   streaming/non-streaming API, with tokenizer and settings held fixed.
@@ -157,9 +215,10 @@ The current Python CI covers Gemma/Qwen settings and mock/fake-engine HTTP paths
 not real GPU loading or translation quality. A container-only telemetry unit-test
 failure was reproduced on unchanged main: real cgroup memory replaced its fake
 psutil fixture. The fixture now isolates cgroup limits; production telemetry is unchanged.
-Local validation ran 480 existing Python tests (477 passed, 3 skipped because
-reference vocabularies were unavailable), 24 HY-V3 tests (all passed), and the
-standalone C++ router smoke test (passed). These are not real-device release gates.
+The pre-profiling revision ran 480 existing Python tests (477 passed, 3 skipped
+because reference vocabularies were unavailable), 24 HY-V3 tests (all passed),
+and the standalone C++ router smoke test (passed). Profiling adds CPU accounting
+and log tests; real CUDA event timing/parity remains a device validation gate.
 
 Local CPU checks:
 

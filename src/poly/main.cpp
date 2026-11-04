@@ -456,6 +456,8 @@ struct Session {
         r.prompt_ms = ms_since(t0);
         if (std::strcmp(r.finish, "cancel") == 0) return r;
 
+        const bool profile_decode = engine.decode_profiling();
+        if (profile_decode) engine.decode_profile_begin();
         t0 = Clock::now();
         std::vector<int32_t> history = kept.seq();
         std::replace_if(history.begin(), history.end(), [](int32_t t) { return t < 0; }, pad);
@@ -512,7 +514,9 @@ struct Session {
                     use = policy.choose(1 + n_d, k, match);
                 }
                 if (use.t == 1) {
+                    if (profile_decode) engine.decode_profile_prepare();
                     engine.eval(&t, 1, true);
+                    if (profile_decode) engine.decode_profile_sample();
                     kept.read(&t, 1);
                     t = pick(engine.logits());
                     policy.observe(false, 1, 0, 0, count(1, 1));
@@ -536,6 +540,7 @@ struct Session {
             }
         }
         r.decode_ms = ms_since(t0);
+        if (profile_decode) engine.decode_profile_end(r.decode_ms);
         return r;
     }
 };
@@ -1050,6 +1055,7 @@ void usage() {
                  "usage: strata-poly --model FILE.gguf (--serve | --tokens ID,ID,... [--max-new N])\n"
                  "  --max-context N        tokens the attention caches hold (default 8192)\n"
                  "  --threads N            CPU threads for the experts that are not in VRAM (default: all usable)\n"
+                 "  --hy-v3-profile        CUDA HY-V3 decode diagnostics (requires --window 1 --lookup 0)\n"
                  "  --vram-reserve-mib N   VRAM left free beside the expert cache, 256 at least (default: a\n"
                  "                         thirty-second of the card, 256 to 768, or a sixteenth, 512 to 1024,\n"
                  "                         when the PC's free RAM is within 4 GiB of the model's files, and then\n"
@@ -1183,6 +1189,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-gpu-experts") o.gpu_experts = false;
         else if (a == "--any-node") o.stay_near = false;
         else if (a == "--no-graphs") o.graphs = false;
+        else if (a == "--hy-v3-profile") o.hy_v3_profile = true;
         else if (a == "--kv-whole") o.kv_grow = false;
         else if (a == "--kv") {
             const std::string fmt = val();
@@ -1247,6 +1254,10 @@ int main(int argc, char** argv) {
     }
     if (o.model.empty() || (!want_serve && ids.empty()) || max_new < 1) {
         usage();
+        return 2;
+    }
+    if (o.hy_v3_profile && lookup != 0) {
+        std::fprintf(stderr, "strata-poly: --hy-v3-profile requires --lookup 0 (single-token decode)\n");
         return 2;
     }
     if (o.batch < 0 || o.batch > 8 || check < 0 || check > o.batch || (check > 0 && (int) ids.size() <= check)) {

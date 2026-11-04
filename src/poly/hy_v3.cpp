@@ -153,6 +153,15 @@ void HyV3::alloc_caches() {
 
 // Per-token buffers hold rows_ tokens, row after row.
 void HyV3::assign_scratch() {
+    if (opt_.hy_v3_profile && attention_events_.empty()) {
+        attention_events_.resize((size_t) n_layer_);
+        for (AttentionEvents& e : attention_events_) {
+            e.begin = timing_event();
+            e.end = timing_event();
+        }
+        std::fprintf(stderr, "strata-poly: HY-V3 profiling enabled: CUDA graph timing events; "
+                             "GPU samples every 16 decode steps; timings overlap and instrumentation changes throughput\n");
+    }
     const size_t n = (size_t) rows_, heads = n * n_head_ * head_dim_, kv = n * n_kv_ * head_dim_;
     qraw_ = fbuf(heads);
     q_ = fbuf(heads);
@@ -256,7 +265,12 @@ void HyV3::load_extra(const uint8_t* src, int64_t pos) {
 
 // The recordings of a full layer's head are numbered by the rows they are sized for; a window layer's never
 // reads more than its window.
-int HyV3::head_key(int il, int n) const { return blocks_[(size_t) il].swa ? 0 : room_key(n); }
+int HyV3::head_key(int il, int n) const {
+    const int key = blocks_[(size_t) il].swa ? 0 : room_key(n);
+    // Profile mode keeps separate recordings for sampled and ordinary heads.
+    // With the option off this remains exactly the original cache key.
+    return opt_.hy_v3_profile ? 2 * key + (profile_sample_ ? 1 : 0) : key;
+}
 
 // A side of a layer's cache: a full layer's at the positions, a window layer's at their places in the ring.
 void HyV3::store(const float* x, const Block& B, int64_t pos, int n, bool value) {
@@ -344,7 +358,20 @@ void HyV3::layer_head(Layer& L, int il, int n) {
     const int threads = sum_threads(n_embd_);
     kernels::native_add_rms_norm_q8_1(r_, nullptr, fp(L.attn_norm), xn_, xq_, n_embd_, n, rms_eps_, threads, st_);
     dbg("attn_in", il, xn_, n_embd_);
+#if !defined(STRATA_USE_HIP)
+    // External event nodes retain timestamps when a head's CUDA graph replays.
+    // No events are created or enqueued with the option off. Ordinary event
+    // records inside stream capture would not provide replay timing evidence.
+    if (profile_sample_)
+        ck(cudaEventRecordWithFlags((cudaEvent_t) attention_events_[(size_t) il].begin,
+                                   cs(st_), cudaEventRecordExternal), "HY-V3 attention begin");
+#endif
     attn(B, pos_, n);
+#if !defined(STRATA_USE_HIP)
+    if (profile_sample_)
+        ck(cudaEventRecordWithFlags((cudaEvent_t) attention_events_[(size_t) il].end,
+                                   cs(st_), cudaEventRecordExternal), "HY-V3 attention end");
+#endif
     dbg("attn", il, ao_, n_embd_);
 
     kernels::native_add_rms_norm_q8_1(r_, ao_, fp(L.ffn_norm), xn_, xq_, n_embd_, n, rms_eps_, threads, st_);
@@ -402,6 +429,51 @@ void HyV3::moe_shared(const Layer& L, int il, int n) {
     lin(L.sh_up, xn_, u_, n, xq_);
     swiglu_clamp(g_, u_, h_, n * n_ff_shexp_, clamp_shexp_[(size_t) il], st_);
     lin(L.sh_down, h_, fo_, n);
+}
+
+void HyV3::decode_profile_begin() {
+    profile_totals_ = {};
+    profile_sample_ = false;
+    profile_before_ = stats();   // prefill, including its last one-token eval, is excluded
+}
+
+void HyV3::decode_profile_prepare() { profile_sample_ = profile_totals_.wants_sample(); }
+
+void HyV3::decode_profile_sample() {
+    const auto start = Clock::now();
+    const bool sampled = profile_sample_;
+    profile_sample_ = false;
+    double attention = 0;
+    // eval(..., true) already synchronized for its logits. Do not insert a
+    // stream/device wait here or synchronize every layer and destroy overlap.
+    if (sampled) for (const AttentionEvents& e : attention_events_) {
+        float ms = 0;
+        ck(cudaEventElapsedTime(&ms, (cudaEvent_t) e.begin, (cudaEvent_t) e.end), "HY-V3 attention elapsed");
+        attention += ms;
+    }
+    profile_totals_.add_step(attention, ms_since(start), sampled);
+}
+
+void HyV3::decode_profile_end(double wall_ms) {
+    profile_sample_ = false;
+    const Stats after = stats();
+    const auto& p = profile_totals_;
+    if (p.steps == 0) {
+        std::fprintf(stderr, "strata hy-v3 profile: {\"decode_steps\":0,\"note\":\"no decode model step\"}\n");
+        return;
+    }
+    std::fprintf(stderr,
+        "strata hy-v3 profile: {\"decode_steps\":%lld,\"gpu_samples\":%lld,\"sample_stride\":%d,\"attention_gpu_ms_per_step\":%.6f,"
+        "\"cpu_experts_host_ms_per_step\":%.6f,\"router_wait_host_ms_per_step\":%.6f,"
+        "\"decode_wall_ms_per_step\":%.6f,\"collect_host_ms_per_step\":%.6f,"
+        "\"gpu_expert_uses\":%lld,\"cpu_expert_uses\":%lld,\"overlapping\":true}\n",
+        (long long) p.steps, (long long) p.samples, HyV3ProfileTotals::kStride, p.per_sample(p.attention_gpu_ms),
+        p.per_step(after.cpu_ms - profile_before_.cpu_ms),
+        p.per_step(after.route_wait_ms - profile_before_.route_wait_ms),
+        p.per_step(wall_ms), p.per_step(p.collect_host_ms),
+        (long long) (after.gpu_experts - profile_before_.gpu_experts),
+        (long long) (after.cpu_experts - profile_before_.cpu_experts));
+    std::fflush(stderr);
 }
 
 }  // namespace strata::poly

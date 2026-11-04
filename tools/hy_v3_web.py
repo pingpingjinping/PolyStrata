@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +76,7 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
                  ram_experts_mib: int = -1, prompt_batch: int = 1024,
                  stage_mib: int = 128, stage_read_mib: int = 2048,
                  prompt_cache: int = 6, expert_profile: Path | None = None,
-                 threads: int | None = None) -> dict:
+                 threads: int | None = None, profile_decode: bool = False) -> dict:
     """A private run config understood directly by serve/server.py."""
     config = {
         "exe": str(exe),
@@ -110,6 +111,8 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
         config["args"] += ["--expert-profile", str(expert_profile)]
     if threads is not None:
         config["args"] += ["--threads", str(threads)]
+    if profile_decode:
+        config["args"] += ["--hy-v3-profile"]
     return config
 
 
@@ -135,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--threads", type=int,
                     help="CPU threads for off-VRAM experts (default: engine auto); "
                          "compare physical cores with auto when CPU expert work dominates")
+    ap.add_argument("--profile-decode", action="store_true",
+                    help="opt-in native CUDA decode timers; requires the new profiling EXE; "
+                         "prints overlapping GPU attention / CPU phase / router wait timings")
     ap.add_argument("--ram-experts-mib", type=int, default=-1,
                     help="-1 holds all experts outside VRAM in RAM (~10.7 GiB on this model); "
                          "set 4096 to restore the previous memory-saving mode")
@@ -184,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
                           prompt_batch=args.prompt_batch, stage_mib=args.stage_mib,
                           stage_read_mib=args.stage_read_mib, prompt_cache=args.prompt_cache,
                           expert_profile=runtime / "hy-mt2-experts.bin" if args.learn_experts else None,
-                          threads=args.threads)
+                          threads=args.threads, profile_decode=args.profile_decode)
     config_path = runtime / "strata-hy-mt2.json"
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -205,9 +211,22 @@ def main(argv: list[str] | None = None) -> int:
                 "--config", str(config_path), "--port", str(args.port)]
     if not args.no_open:
         sys.argv.append("--open")
+    profile_stop = threading.Event()
+    profile_thread = None
+    if args.profile_decode:
+        from hy_v3_profile_log import follow_profile
+        log = Path(config["log"])
+        offset = log.stat().st_size if log.exists() else 0
+        profile_thread = threading.Thread(target=follow_profile, args=(log, profile_stop, offset), daemon=True)
+        profile_thread.start()
+        print("[hy-v3] Decode profiling ON: timings overlap and profiling changes throughput. "
+              "Keep web Temperature=0 for the comparison.", flush=True)
     try:
         return server.main()
     finally:
+        profile_stop.set()
+        if profile_thread is not None:
+            profile_thread.join(3)
         sys.argv = original_argv
 
 

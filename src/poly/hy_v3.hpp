@@ -7,6 +7,7 @@
 #pragma once
 
 #include "engine.hpp"
+#include "hy_v3_profile.hpp"
 
 namespace strata::poly {
 
@@ -15,6 +16,10 @@ public:
     size_t card_row_bytes() const override;
     void save_card_rows(int64_t first, int64_t n, uint8_t* dst) override;
     void load_card_rows(const uint8_t* src, int64_t from, int64_t count, int64_t first, int64_t n) override;
+    void decode_profile_begin() override;
+    void decode_profile_prepare() override;
+    void decode_profile_sample() override;
+    void decode_profile_end(double wall_ms) override;
 
 protected:
     void load_geometry() override;
@@ -58,6 +63,11 @@ private:
     void window_runs(int64_t pos, F&& f) const;
 
     std::vector<Block> blocks_;   ///< one a layer of layers_
+    struct AttentionEvents { void* begin = nullptr; void* end = nullptr; };
+    std::vector<AttentionEvents> attention_events_;
+    HyV3ProfileTotals profile_totals_;
+    Stats profile_before_;
+    bool profile_sample_ = false;
     int n_head_ = 0, n_kv_ = 0, head_dim_ = 0, n_dense_ = 0;
     float theta_scale_ = 0;   ///< a rotary pair turns by position * theta_scale^pair
     bool w_norm_ = true;      ///< the picked experts' weights are made to sum to one

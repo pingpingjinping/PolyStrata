@@ -8,6 +8,12 @@ on:
       - 'tools/strata_tokenizer.py'
       - 'tools/hy_v3_translate_gui.py'
       - 'tools/hy_v3_web.py'
+      - 'tools/hy_v3_profile_log.py'
+      - 'tests/test_hy_v3_profile.py'
+      - 'tests/hy_v3_profile_test.cpp'
+      - 'src/poly/hy_v3_profile.hpp'
+      - 'src/poly/engine.hpp'
+      - 'src/poly/main.cpp'
       - 'tools/hy_v3_bench.py'
       - 'tests/test_hy_v3_bench.py'
       - 'serve/models.py'
@@ -32,6 +38,10 @@ jobs:
         run: |
           c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_router_test.cpp -o /tmp/hy_v3_router_test
           /tmp/hy_v3_router_test
+      - name: Decode profile accounting (CPU only)
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_profile_test.cpp -o /tmp/hy_v3_profile_test
+          /tmp/hy_v3_profile_test
       - name: Check native HY-V3 backend wiring (source-only)
         run: python -m unittest discover -s tests -p 'test_hy_v3_native_wiring.py' -v
       - name: Inspect synthetic HY-V3 GGUF headers
@@ -55,3 +65,5 @@ jobs:
           tools.test_setup_qwen36 tools.test_strata_tokenizer -v
       - name: Translation benchmark transport and accounting
         run: python -m unittest discover -s tests -p 'test_hy_v3_bench.py' -v
+      - name: Decode diagnostic log and opt-in wiring
+        run: python -m unittest discover -s tests -p 'test_hy_v3_profile.py' -v
