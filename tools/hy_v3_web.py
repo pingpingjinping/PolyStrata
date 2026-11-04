@@ -71,7 +71,8 @@ def prepare_tokenizer(model: Path, runtime: Path) -> Path:
 
 
 def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
-                 port: int, context: int, lib_dirs: list[str], temperature: float) -> dict:
+                 port: int, context: int, lib_dirs: list[str], temperature: float,
+                 ram_experts_mib: int = -1) -> dict:
     """A private run config understood directly by serve/server.py."""
     return {
         "exe": str(exe),
@@ -81,7 +82,7 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
             "--max-context", str(context),
             "--prompt-batch", "32",
             "--stage-mib", "64",
-            "--ram-experts-mib", "4096",
+            "--ram-experts-mib", str(ram_experts_mib),
             "--no-draft",
             "--window", "1",
             "--lookup", "0",
@@ -110,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=18081)
     ap.add_argument("--context", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.7)
+    ap.add_argument("--ram-experts-mib", type=int, default=-1,
+                    help="-1 holds all experts outside VRAM in RAM (~10.7 GiB on this model); "
+                         "set 4096 to restore the previous memory-saving mode")
     ap.add_argument("--no-open", action="store_true", help="Don't open the browser automatically")
     args = ap.parse_args(argv)
     exe = args.exe.expanduser().resolve()
@@ -124,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--context must be 512..8192 for the first HyV3 web test")
     if not 0 <= args.temperature <= 2:
         ap.error("--temperature must be 0..2")
+    if args.ram_experts_mib != -1 and not 1024 <= args.ram_experts_mib <= 16384:
+        ap.error("--ram-experts-mib must be -1 or 1024..16384")
 
     runtime = RUNTIME
     runtime.mkdir(parents=True, exist_ok=True)
@@ -140,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     config = build_config(exe=exe, model=model, tokenizer=tokenizer, runtime=runtime,
                           port=args.port, context=args.context, lib_dirs=lib_dirs,
-                          temperature=args.temperature)
+                          temperature=args.temperature, ram_experts_mib=args.ram_experts_mib)
     config_path = runtime / "strata-hy-mt2.json"
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
