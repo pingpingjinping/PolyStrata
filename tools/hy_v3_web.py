@@ -72,7 +72,9 @@ def prepare_tokenizer(model: Path, runtime: Path) -> Path:
 
 def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
                  port: int, context: int, lib_dirs: list[str], temperature: float,
-                 ram_experts_mib: int = -1) -> dict:
+                 ram_experts_mib: int = -1, prompt_batch: int = 1024,
+                 stage_mib: int = 128, stage_read_mib: int = 2048,
+                 prompt_cache: int = 6) -> dict:
     """A private run config understood directly by serve/server.py."""
     return {
         "exe": str(exe),
@@ -80,13 +82,14 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
             "--model", str(model),
             "--serve",
             "--max-context", str(context),
-            "--prompt-batch", "32",
-            "--stage-mib", "64",
+            "--prompt-batch", str(prompt_batch),
+            "--stage-mib", str(stage_mib),
+            "--stage-read-mib", str(stage_read_mib),
             "--ram-experts-mib", str(ram_experts_mib),
             "--no-draft",
             "--window", "1",
             "--lookup", "0",
-            "--prompt-cache", "0",
+            "--prompt-cache", str(prompt_cache),
         ],
         "cwd": str(ROOT),
         "tokenizer": str(tokenizer),
@@ -111,6 +114,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=18081)
     ap.add_argument("--context", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.7)
+    ap.add_argument("--prompt-batch", type=int, default=1024,
+                    help="prompt tokens per evaluation (default 1024, same as regular strata-poly; "
+                         "try 512/256 if RTX 5060 8GB runs out of VRAM)")
+    ap.add_argument("--stage-mib", type=int, default=128,
+                    help="GPU staging buffer while reading prompts (default 128 MiB)")
+    ap.add_argument("--stage-read-mib", type=int, default=2048,
+                    help="temporarily widen staging from expert VRAM during long prefill (default 2048; 0 to disable)")
+    ap.add_argument("--prompt-cache", type=int, default=6,
+                    help="conversation prompt checkpoints (default 6; 0 to disable)")
     ap.add_argument("--ram-experts-mib", type=int, default=-1,
                     help="-1 holds all experts outside VRAM in RAM (~10.7 GiB on this model); "
                          "set 4096 to restore the previous memory-saving mode")
@@ -128,6 +140,14 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--context must be 512..8192 for the first HyV3 web test")
     if not 0 <= args.temperature <= 2:
         ap.error("--temperature must be 0..2")
+    if not 1 <= args.prompt_batch <= 4096:
+        ap.error("--prompt-batch must be 1..4096")
+    if not 16 <= args.stage_mib <= 2048:
+        ap.error("--stage-mib must be 16..2048")
+    if not 0 <= args.stage_read_mib <= 4096:
+        ap.error("--stage-read-mib must be 0..4096")
+    if not 0 <= args.prompt_cache <= 32:
+        ap.error("--prompt-cache must be 0..32")
     if args.ram_experts_mib != -1 and not 1024 <= args.ram_experts_mib <= 16384:
         ap.error("--ram-experts-mib must be -1 or 1024..16384")
 
@@ -146,13 +166,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     config = build_config(exe=exe, model=model, tokenizer=tokenizer, runtime=runtime,
                           port=args.port, context=args.context, lib_dirs=lib_dirs,
-                          temperature=args.temperature, ram_experts_mib=args.ram_experts_mib)
+                          temperature=args.temperature, ram_experts_mib=args.ram_experts_mib,
+                          prompt_batch=args.prompt_batch, stage_mib=args.stage_mib,
+                          stage_read_mib=args.stage_read_mib, prompt_cache=args.prompt_cache)
     config_path = runtime / "strata-hy-mt2.json"
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     temporary.replace(config_path)
     print(f"[hy-v3] Hy-MT2 Q4_K_M experimental web server: http://127.0.0.1:{args.port}", flush=True)
     print(f"[hy-v3] Config kept separate: {config_path}", flush=True)
+    print(f"[hy-v3] Prefill: batch={args.prompt_batch}, stage={args.stage_mib} MiB, "
+          f"read stage={args.stage_read_mib} MiB, prompt cache={args.prompt_cache}", flush=True)
     print("[hy-v3] Close the other PolyStrata server first to free VRAM. Ctrl+C stops this server.",
           flush=True)
     print("[hy-v3] Send a translation instruction (e.g., 'Translate into Korean...') with the Japanese text.",
