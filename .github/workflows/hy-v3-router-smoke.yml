@@ -24,6 +24,10 @@ on:
       - 'src/poly/hy_v3.hpp'
       - 'src/poly/hy_v3.cpp'
       - 'src/poly/engine.cpp'
+      - 'src/poly/cpu_experts.cpp'
+      - 'src/poly/cpu_experts.hpp'
+      - 'tests/hy_v3_cpu_down32_test.cpp'
+      - 'tests/test_hy_v3_cpu_down32.py'
       - 'CMakeLists.txt'
       - 'tests/test_hy_v3_native_wiring.py'
       - 'tests/test_hy_v3_gguf.py'
@@ -67,3 +71,26 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_hy_v3_bench.py' -v
       - name: Decode diagnostic log and opt-in wiring
         run: python -m unittest discover -s tests -p 'test_hy_v3_profile.py' -v
+      - name: CPU scheduling option stays isolated
+        run: python -m unittest discover -s tests -p 'test_hy_v3_cpu_down32.py' -v
+  cpu-down32-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the same pinned ggml used by the native build
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 3cf03257f219afbe7334045ff7c6a06ac68c627d
+          path: .ci-llamacpp
+      - name: Configure CPU-only scheduling parity test
+        run: >-
+          cmake -S . -B build-hy-cpu -DSTRATA_ENABLE_CUDA=OFF
+          -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=OFF
+          -DSTRATA_BUILD_HY_CPU_TEST=ON -DSTRATA_PORTABLE=ON
+          -DSTRATA_GGML_DIR=${{ github.workspace }}/.ci-llamacpp
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Build real quantized CPU expert test
+        run: cmake --build build-hy-cpu --target poly_hy_cpu_down32_test --parallel 2
+      - name: Compare 16-row and 32-row output bits and callbacks
+        run: ./build-hy-cpu/poly_hy_cpu_down32_test

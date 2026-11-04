@@ -1187,6 +1187,10 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
     const Shards file(o.model);
     const MetaValue* arch = file.get("general.architecture");
     const std::string name = arch ? arch->s : std::string();
+    if (o.hy_v3_cpu_down32 && name != "hy_v3")
+        throw std::runtime_error("--hy-v3-cpu-down32 is an experimental HY-V3-only CPU scheduling option");
+    if (o.hy_v3_cpu_down32)
+        std::fprintf(stderr, "strata-poly: HY-V3 CPU down tasks: 32 rows (experimental; stock 16)\n");
     if (o.hy_v3_profile && (name != "hy_v3" || !o.layer_split.empty() || o.batch != 0 || o.window != 1 || o.dump))
         throw std::runtime_error("--hy-v3-profile requires a HY-V3 model, one GPU/sequence, --window 1 and no --dump");
 #if defined(STRATA_USE_HIP)
@@ -3365,8 +3369,12 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 if (!pool_help()) std::this_thread::yield();
             }
         };
-        cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.u_type, (int) L.d_type, n_embd_, n_ff_exp_,
-                    h_x_ + (size_t) at * e_row, limit, gelu_, cpu, meanwhile, any_late ? late : nullptr, &wait);
+        if (opt_.hy_v3_cpu_down32)
+            cpu_experts_down32(*workers_, host, n_host, m, (int) L.gu_type, (int) L.u_type, (int) L.d_type, n_embd_, n_ff_exp_,
+                              h_x_ + (size_t) at * e_row, limit, gelu_, cpu, meanwhile, any_late ? late : nullptr, &wait);
+        else
+            cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.u_type, (int) L.d_type, n_embd_, n_ff_exp_,
+                        h_x_ + (size_t) at * e_row, limit, gelu_, cpu, meanwhile, any_late ? late : nullptr, &wait);
         pool_reads_.clear();
         stats_.cpu_ms += ms_since(t0);
     }

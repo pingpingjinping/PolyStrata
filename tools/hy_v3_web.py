@@ -76,7 +76,8 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
                  ram_experts_mib: int = -1, prompt_batch: int = 1024,
                  stage_mib: int = 128, stage_read_mib: int = 2048,
                  prompt_cache: int = 6, expert_profile: Path | None = None,
-                 threads: int | None = None, profile_decode: bool = False) -> dict:
+                 threads: int | None = None, profile_decode: bool = False,
+                 cpu_down32: bool = False) -> dict:
     """A private run config understood directly by serve/server.py."""
     config = {
         "exe": str(exe),
@@ -113,6 +114,8 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
         config["args"] += ["--threads", str(threads)]
     if profile_decode:
         config["args"] += ["--hy-v3-profile"]
+    if cpu_down32:
+        config["args"] += ["--hy-v3-cpu-down32"]
     return config
 
 
@@ -141,6 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--profile-decode", action="store_true",
                     help="opt-in native CUDA decode timers; requires the new profiling EXE; "
                          "prints overlapping GPU attention / CPU phase / router wait timings")
+    ap.add_argument("--cpu-down32", action="store_true",
+                    help="experimental HY-V3 CPU down scheduling: 32 rows/task instead of 16; "
+                         "requires the new EXE; compare at the same thread count")
     ap.add_argument("--ram-experts-mib", type=int, default=-1,
                     help="-1 holds all experts outside VRAM in RAM (~10.7 GiB on this model); "
                          "set 4096 to restore the previous memory-saving mode")
@@ -190,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                           prompt_batch=args.prompt_batch, stage_mib=args.stage_mib,
                           stage_read_mib=args.stage_read_mib, prompt_cache=args.prompt_cache,
                           expert_profile=runtime / "hy-mt2-experts.bin" if args.learn_experts else None,
-                          threads=args.threads, profile_decode=args.profile_decode)
+                          threads=args.threads, profile_decode=args.profile_decode, cpu_down32=args.cpu_down32)
     config_path = runtime / "strata-hy-mt2.json"
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -199,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[hy-v3] Config kept separate: {config_path}", flush=True)
     print(f"[hy-v3] Prefill: batch={args.prompt_batch}, stage={args.stage_mib} MiB, "
           f"read stage={args.stage_read_mib} MiB, prompt cache={args.prompt_cache}", flush=True)
+    if args.cpu_down32:
+        print("[hy-v3] Experimental CPU down tasks: 32 rows (stock 16)", flush=True)
     print("[hy-v3] Close the other PolyStrata server first to free VRAM. Ctrl+C stops this server.",
           flush=True)
     print("[hy-v3] Send a translation instruction (e.g., 'Translate into Korean...') with the Japanese text.",

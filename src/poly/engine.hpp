@@ -82,6 +82,7 @@ struct Options {
     bool stay_near = true;        ///< with several NUMA nodes, keep the CPU threads on the one that holds the experts
     bool graphs = true;           ///< a token's fixed launches are recorded once, a CUDA graph a layer, and replayed
     bool hy_v3_profile = false;   ///< opt-in single-sequence CUDA HY-V3 decode timing; adds timing events to graphs
+    bool hy_v3_cpu_down32 = false; ///< opt-in HY-V3 CPU scheduling: 32 down rows per task, stock 16 otherwise
     bool kv_grow = true;          ///< the attention caches get VRAM as the sequence grows, where the card can map it
                                   ///< so; false: for the whole context at load, as the expert cache gets the rest
     KvFmt kv_format = KvFmt::kFp16;   ///< the K and V caches' format; fp16 by default (byte-identical path)

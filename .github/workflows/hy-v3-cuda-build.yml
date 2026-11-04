@@ -7,6 +7,8 @@ on:
       - 'src/poly/main.cpp'
       - 'src/poly/engine.cpp'
       - 'src/poly/engine.hpp'
+      - 'src/poly/cpu_experts.cpp'
+      - 'src/poly/cpu_experts.hpp'
       - 'CMakeLists.txt'
       - '.github/workflows/hy-v3-cuda-build.yml'
   workflow_dispatch:

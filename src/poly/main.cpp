@@ -1056,6 +1056,7 @@ void usage() {
                  "  --max-context N        tokens the attention caches hold (default 8192)\n"
                  "  --threads N            CPU threads for the experts that are not in VRAM (default: all usable)\n"
                  "  --hy-v3-profile        CUDA HY-V3 decode diagnostics (requires --window 1 --lookup 0)\n"
+                 "  --hy-v3-cpu-down32     opt-in HY-V3 CPU down scheduling experiment (32 rows/task; stock 16)\n"
                  "  --vram-reserve-mib N   VRAM left free beside the expert cache, 256 at least (default: a\n"
                  "                         thirty-second of the card, 256 to 768, or a sixteenth, 512 to 1024,\n"
                  "                         when the PC's free RAM is within 4 GiB of the model's files, and then\n"
@@ -1190,6 +1191,7 @@ int main(int argc, char** argv) {
         else if (a == "--any-node") o.stay_near = false;
         else if (a == "--no-graphs") o.graphs = false;
         else if (a == "--hy-v3-profile") o.hy_v3_profile = true;
+        else if (a == "--hy-v3-cpu-down32") o.hy_v3_cpu_down32 = true;
         else if (a == "--kv-whole") o.kv_grow = false;
         else if (a == "--kv") {
             const std::string fmt = val();

@@ -26,6 +26,22 @@ reported 69.4 tok/s. An expert-learning-enabled run later reported 76.0 tok/s
 and 75.2% hits, but whether that was after profile reload was not established.
 These reports do not yet isolate causality or establish a validated new default.
 
+The same user later compared CPU thread counts at batch 2048, with decode
+profiling enabled. Each row is a single run, not a repeated median:
+
+| Threads | Generation tok/s | Expert hits | Attention GPU ms/step | CPU host phase ms/step | Router wait ms/step | Decode wall ms/step |
+| --- | --- | --- | --- | --- | --- | --- |
+| Automatic | 67.1 | 74.2% | 3.470 | 7.375 | 4.531 | 14.907 |
+| 4 | 73.0 | 75.7% | 3.337 | 6.744 | 4.603 | 13.704 |
+| 6 | 79.1 | 75.7% | 3.298 | 5.792 | 4.408 | 12.657 |
+| 8 | 76.4 | 75.9% | 3.411 | 5.720 | 4.749 | 13.105 |
+
+A subsequent **6-thread run without profiling** returned 1,323 tokens at
+**76.7 tok/s**, with 75.8% expert hits. Use 6 threads as this PC's provisional
+comparison setting. The difference between that run and 79.1 is not an estimate
+of profiling overhead; these are separate requests with run-to-run variation.
+Host phase and router wait overlap other work; they are not additive.
+
 References:
 
 - [Official model and configuration](https://huggingface.co/tencent/Hy-MT2-30B-A3B)
@@ -186,7 +202,8 @@ averages cover all decode steps. Timing events use external event-record nodes;
 graph replay stays enabled. Events are read after the ordinary logits synchronization,
 without adding layer-by-layer stream waits. Profiling itself adds event nodes and
 host calls, so its tok/s is diagnostic and must not be presented as an optimized
-speed measurement. Neither a speedup nor output parity has been measured yet.
+speed measurement. The user has now collected the timing reports above; native
+output/logit parity against the reference engine remains unverified.
 
 The first version supports **CUDA, one GPU, one sequence, window 1, lookup 0**.
 Other model families and unsupported profile combinations fail explicitly; HIP
@@ -194,6 +211,55 @@ profiling is not supported. Without the flag, no timing events are allocated or
 recorded and existing model math/graphs/protocol fields are unchanged. Profile
 JSON goes to native stderr, while the launcher tails just those new lines into
 its console. No new stdout protocol message or common web-server change is needed.
+
+### Step 2: CPU down-projection scheduling experiment (opt-in)
+
+`--cpu-down32` passes native `--hy-v3-cpu-down32`. It changes only the CPU
+down-projection work distribution from 16 output rows per task to 32: at Hy's
+2048-wide hidden state, 128 down tasks become 64. Fewer tasks may reduce worker
+bookkeeping but can also reduce load balancing; a speedup is not established.
+The stock CPU function is retained unchanged. The experimental copy uses the
+same quantizers, dot products, activation math and per-output expert sum order.
+The option defaults off and is rejected for other model architectures.
+
+Download the **new** Windows CI EXE for this change. Stop the old server and
+replace `Desktop\PolyStrata\strata-poly.exe`; leave the model and venv there.
+Run a baseline on that same new executable first:
+
+```powershell
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --learn-experts --profile-decode
+```
+
+Then stop the server and append **`--cpu-down32`** to the same command. Verify
+the native log says `HY-V3 CPU down tasks: 32 rows`. Use the same new chat input,
+web Temperature 0, expert-profile contents and cache warm-up state for both.
+Expert learning writes its profile on answers/exit, so retain a copy of
+`.hy-v3-web/hy-mt2-experts.bin` before the baseline and restore it after stopping
+the server before the enabled run. Repeat the pair if the change is small.
+Report each `done` and profile line and compare output too. Any promising
+result still needs a same-build pair without profiling for the final throughput.
+Remove `--cpu-down32` to return to the stock scheduling.
+
+The standalone CPU test uses the pinned real ggml backend, synthetic quantized
+Q4_K/Q5_K/Q6_K and F32 matrices, Hy-sized 2048/768 dimensions and partial output
+tasks. It compares output bits with the stock function, reused experts, two
+token rows, SiLU/GELU, launch/wait callbacks and 1/4/6/8 worker threads. This is
+CPU scheduling evidence, not whole-model CUDA parity or a speed benchmark.
+Local Release CPU build passed **720 checks**, all **31 HY-V3 Python tests**
+passed, and the existing regression suite ran **480 tests: 477 passed, 3 skipped**
+for absent reference tokenizer data. Router/profile accounting tests and the
+host `main.cpp` syntax check passed. CUDA runtime, HIP and SYCL were unavailable
+locally; the new Windows CUDA compile is a separate CI gate.
+
+To reproduce the quantized CPU check without a GPU:
+
+```sh
+cmake -S . -B build-hy-cpu -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_HY_CPU_TEST=ON -DSTRATA_PORTABLE=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-hy-cpu --target poly_hy_cpu_down32_test --parallel 2
+./build-hy-cpu/poly_hy_cpu_down32_test
+```
 
 ### Remaining gates
 
