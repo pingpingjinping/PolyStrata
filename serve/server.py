@@ -3321,6 +3321,13 @@ class Service:
         pre = getattr(tokenizer, "pre", "")
         self.call_format = "glm" if pre in ("glm4", "glm5", "flint") else "gemma" if pre == "gemma4" else \
             "dsml" if pre in ("joyai-llm", "deepseek-v3") else "lfm2" if pre == "lfm2" else "function"
+        # HY-V3 uses a Hunyuan EOS literal; include it even in GGUFs that omit
+        # a matching GGUF eot/eom metadata key. A single token is required.
+        if pre == "hunyuan-dense":
+            for marker in ("<eos:6124c78e>", "<｜hy_endofsentence｜>", "<｜hy_EOT｜>"):
+                end_ids = tokenizer.encode(marker, parse_special=True)
+                if len(end_ids) == 1 and tokenizer.decode(end_ids) == marker:
+                    self.stop_ids.add(end_ids[0])
         self.turn_ids = frozenset(t[0] for t in (tokenizer.encode(s, parse_special=True)
                                                  for s in TURN_OPENERS[self.call_format]) if len(t) == 1)
         self.engine.turn_ids = self.turn_ids            # the GEN line's turn_at (StrataEngine.turn_key)
