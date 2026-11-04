@@ -55,7 +55,7 @@ private:
         Dev probs_b_dev;
     };
 
-    void attn(Block& B, int64_t pos, int n);
+    void attn(Block& B, int64_t pos, int n, int il);
     void attn_rows(Block& B, int n);
     void store(const float* x, const Block& B, int64_t pos, int n, bool value);
     void dense_ffn(Block& B, int il, int n);
@@ -63,7 +63,12 @@ private:
     void window_runs(int64_t pos, F&& f) const;
 
     std::vector<Block> blocks_;   ///< one a layer of layers_
-    struct AttentionEvents { void* begin = nullptr; void* end = nullptr; };
+    struct AttentionEvents {
+        void* begin = nullptr;
+        void* qkv_end = nullptr;
+        void* core_end = nullptr;
+        void* end = nullptr;
+    };
     std::vector<AttentionEvents> attention_events_;
     HyV3ProfileTotals profile_totals_;
     Stats profile_before_;

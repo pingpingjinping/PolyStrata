@@ -20,7 +20,14 @@ def format_profile(line):
                   ("profile collection", "collect_host_ms_per_step")]
         times = " | ".join(f"{label}={float(data[key]):.3f} ms/step" for label, key in fields)
         samples = data.get("gpu_samples", "unknown")
-        return f"[hy-v3 profile] {steps} decode steps, {samples} GPU samples | {times} | overlapping timings; diagnostic throughput"
+        summary = f"[hy-v3 profile] {steps} decode steps, {samples} GPU samples | {times} | overlapping timings; diagnostic throughput"
+        parts = [("QKV+norm/RoPE/KV", "attention_qkv_gpu_ms_per_step"),
+                 ("attention core", "attention_core_gpu_ms_per_step"),
+                 ("output projection", "attention_output_gpu_ms_per_step")]
+        if any(key in data for _, key in parts):
+            detail = " | ".join(f"{label}={float(data[key]):.3f} ms/step" for label, key in parts)
+            summary += f"\n[hy-v3 attention] {detail} | sampled GPU intervals; event overhead included"
+        return summary
     except (ValueError, TypeError, KeyError):
         return "[hy-v3 profile] invalid diagnostic line; inspect the native log"
 

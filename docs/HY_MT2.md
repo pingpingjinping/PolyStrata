@@ -170,18 +170,21 @@ whole correctly translated input as well as tok/s; tokenizers differ across mode
 
 `--profile-decode` enables native `--hy-v3-profile` in the isolated launcher.
 **Download the new Windows sm_120 `strata-poly.exe` CI artifact first**; the
-previous executable does not recognize the new flag. Keep the existing model,
-tokenizer and CUDA DLL environment. Close the old server before replacing its EXE.
+current profiling version adds QKV/core/output detail. Older profiling builds
+print only the aggregate line; pre-profiling builds reject the flag. Keep the
+existing model, tokenizer and CUDA DLL environment. Close the old server before
+replacing its EXE.
 
 ```powershell
 git pull
-& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --temperature 0 --learn-experts --profile-decode
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --cpu-down32 --profile-decode
 ```
 
 Set the web Chat Temperature to **0 and save it**: a browser-stored request
 temperature overrides the launcher's default. Use a new conversation, the same
 100 Japanese lines and no other API clients. Send the final `[hy-v3 profile]`
-line together with the normal `done` line. Remove `--profile-decode` for normal use.
+and **`[hy-v3 attention]`** lines together with the normal `done` line. Keep
+expert learning off for this comparison. Remove `--profile-decode` for normal use.
 
 The profile covers **decode eval steps only**: prefill and its final one-token
 eval are excluded. The first generated token is picked from prefill logits and
@@ -191,15 +194,21 @@ An answer with no decode eval emits a zero-step note rather than a fake rate.
 | Field | What it measures |
 | --- | --- |
 | attention GPU | CUDA event interval across each layer's Q/K/V projection, Q/K norm, RoPE, KV store, attention and output projection; summed over 48 layers and averaged over sampled decode steps |
+| QKV+norm/RoPE/KV | GPU interval from attention begin through all Q/K/V projections, Q/K head norms, RoPE and fp16 K/V cache stores; excludes the input RMSNorm before attention begin |
+| attention core | GPU interval containing `attend()` (decode) or `attend_batch()` (prefill is excluded from this report); excludes Q/K/V and output projections |
+| output projection | GPU interval containing the final `wo` projection from attention output into the residual width |
 | CPU expert host phase | Existing host elapsed time in `cpu_experts()`, including parallel GPU-launch callbacks, weight-read waits and worker synchronization; not CPU utilization or exclusive CPU compute time |
 | router host wait | Existing host time waiting for router-copy readiness; can include preceding queued GPU work, not just the router kernel |
 | decode wall | Whole generation-loop elapsed time per model eval step, including sampling, streaming and profiling overhead |
 | profile collection | Host time spent reading completed timing events per step; excludes GPU event-node overhead |
 
-**These intervals overlap. Do not add them or subtract their sum from wall time.**
-Attention time is a stream interval, not a sum of exclusive kernel durations, and
-does not identify which attention kernel is slow. Cached experts, shared experts,
-logits, transfers and all other work are not individually timed in this first step.
+**CPU/router host intervals overlap GPU work. Do not add those fields or subtract
+their sum from wall time.** The three GPU stages are adjacent intervals within
+`attention GPU`, so their sum should approximately match it (subject to event
+precision/rounding); adding them to the aggregate would double-count attention.
+They are stream intervals including event overhead and any gaps, not exclusive
+kernel durations or a kernel trace. Cached experts, shared experts, logits,
+transfers and all other work are not individually timed here.
 
 GPU samples are taken on steps 1, 17, 33, ... . Profile mode uses distinct graph
 keys for sampled and ordinary heads, so the intervening steps execute recordings
@@ -210,6 +219,23 @@ without adding layer-by-layer stream waits. Profiling itself adds event nodes an
 host calls, so its tok/s is diagnostic and must not be presented as an optimized
 speed measurement. The user has now collected the timing reports above; native
 output/logit parity against the reference engine remains unverified.
+
+The attention breakdown (native JSON `profile_version: 2`) uses four timing
+boundaries per sampled layer rather than two: begin, after QKV/cache, after
+attention core, end. It retains the aggregate fields and the same 1/17/33/...
+sampling schedule. It adds no event nodes to ordinary decode steps or normal
+non-profile mode. Extra sampled event nodes can perturb timings; compare stage
+shares on this version, not a few-percent throughput change against the older
+profiler. No inference speedup is implemented by this diagnostic change.
+The Python log reader accepts older aggregate-only JSON and prints the extra
+line only when the complete new stage field group is present.
+Local checks for this diagnostic extension passed: all 33 HY-V3 Python tests,
+480 existing regression tests (477 passed, 3 skipped for absent reference
+tokenizer data), standalone C++ profile/router tests and the host `main.cpp`
+syntax check. After removing only the two new timing-marker blocks, the
+attention operations/order match the prior source. GPU timestamps and real
+output parity still require device validation; no CUDA runtime, HIP or SYCL
+build/runtime validation was available locally. Keep the PR a Draft.
 
 The first version supports **CUDA, one GPU, one sequence, window 1, lookup 0**.
 Other model families and unsupported profile combinations fail explicitly; HIP

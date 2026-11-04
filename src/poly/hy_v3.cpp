@@ -157,10 +157,13 @@ void HyV3::assign_scratch() {
         attention_events_.resize((size_t) n_layer_);
         for (AttentionEvents& e : attention_events_) {
             e.begin = timing_event();
+            e.qkv_end = timing_event();
+            e.core_end = timing_event();
             e.end = timing_event();
         }
         std::fprintf(stderr, "strata-poly: HY-V3 profiling enabled: CUDA graph timing events; "
-                             "GPU samples every 16 decode steps; timings overlap and instrumentation changes throughput\n");
+                             "GPU samples every 16 decode steps; QKV/core/output breakdown; "
+                             "timings overlap and instrumentation changes throughput\n");
     }
     const size_t n = (size_t) rows_, heads = n * n_head_ * head_dim_, kv = n * n_kv_ * head_dim_;
     qraw_ = fbuf(heads);
@@ -285,7 +288,7 @@ void HyV3::store(const float* x, const Block& B, int64_t pos, int n, bool value)
 
 // The attention: queries and keys normed a head, and in a window layer turned by the position; the keys and
 // values into the caches; each head's normal causal softmax (no sink logits).
-void HyV3::attn(Block& B, int64_t pos, int n) {
+void HyV3::attn(Block& B, int64_t pos, int n, [[maybe_unused]] int il) {
     if (rows_of_) return attn_rows(B, n);
     const long long* at = recording_ ? at_ : nullptr;   // a recorded launch: the tokens from what at_ holds
     const int n_rot = B.rope ? head_dim_ : 0;
@@ -298,6 +301,11 @@ void HyV3::attn(Block& B, int64_t pos, int n) {
     lin(B.wv, xn_, v_, n, xq_);
     store(k_, B, pos, n, false);
     store(v_, B, pos, n, true);
+#if !defined(STRATA_USE_HIP)
+    if (profile_sample_)
+        ck(cudaEventRecordWithFlags((cudaEvent_t) attention_events_[(size_t) il].qkv_end,
+                                   cs(st_), cudaEventRecordExternal), "HY-V3 QKV end");
+#endif
     const float scale = 1.f / std::sqrt((float) head_dim_);
     const int window = B.swa ? window_ : 0, ring = B.swa ? ring_ : 0;
     // a prompt batch with attend_batch()'s kernels; a few tokens with the ones that give a token the same bits in any
@@ -310,6 +318,11 @@ void HyV3::attn(Block& B, int64_t pos, int n) {
         attend(q_, B.keys, B.vals, pos, n, score_, chunk_, att_, head_dim_, n_head_, n_kv_, scale, st_, window, ring,
                false, at, !at ? 0 : B.swa ? std::min(window_ + n - 1, opt_.max_context) : room(n), score_n_, {}, {},
                nullptr);
+#if !defined(STRATA_USE_HIP)
+    if (profile_sample_)
+        ck(cudaEventRecordWithFlags((cudaEvent_t) attention_events_[(size_t) il].core_end,
+                                   cs(st_), cudaEventRecordExternal), "HY-V3 attention core end");
+#endif
     lin(B.wo, att_, ao_, n);
 }
 
@@ -366,7 +379,7 @@ void HyV3::layer_head(Layer& L, int il, int n) {
         ck(cudaEventRecordWithFlags((cudaEvent_t) attention_events_[(size_t) il].begin,
                                    cs(st_), cudaEventRecordExternal), "HY-V3 attention begin");
 #endif
-    attn(B, pos_, n);
+    attn(B, pos_, n, il);
 #if !defined(STRATA_USE_HIP)
     if (profile_sample_)
         ck(cudaEventRecordWithFlags((cudaEvent_t) attention_events_[(size_t) il].end,
@@ -443,15 +456,21 @@ void HyV3::decode_profile_sample() {
     const auto start = Clock::now();
     const bool sampled = profile_sample_;
     profile_sample_ = false;
-    double attention = 0;
+    double attention = 0, qkv = 0, core = 0, output = 0;
     // eval(..., true) already synchronized for its logits. Do not insert a
     // stream/device wait here or synchronize every layer and destroy overlap.
     if (sampled) for (const AttentionEvents& e : attention_events_) {
         float ms = 0;
         ck(cudaEventElapsedTime(&ms, (cudaEvent_t) e.begin, (cudaEvent_t) e.end), "HY-V3 attention elapsed");
         attention += ms;
+        ck(cudaEventElapsedTime(&ms, (cudaEvent_t) e.begin, (cudaEvent_t) e.qkv_end), "HY-V3 QKV elapsed");
+        qkv += ms;
+        ck(cudaEventElapsedTime(&ms, (cudaEvent_t) e.qkv_end, (cudaEvent_t) e.core_end), "HY-V3 attention core elapsed");
+        core += ms;
+        ck(cudaEventElapsedTime(&ms, (cudaEvent_t) e.core_end, (cudaEvent_t) e.end), "HY-V3 attention output elapsed");
+        output += ms;
     }
-    profile_totals_.add_step(attention, ms_since(start), sampled);
+    profile_totals_.add_step(attention, ms_since(start), sampled, qkv, core, output);
 }
 
 void HyV3::decode_profile_end(double wall_ms) {
@@ -463,11 +482,13 @@ void HyV3::decode_profile_end(double wall_ms) {
         return;
     }
     std::fprintf(stderr,
-        "strata hy-v3 profile: {\"decode_steps\":%lld,\"gpu_samples\":%lld,\"sample_stride\":%d,\"attention_gpu_ms_per_step\":%.6f,"
+        "strata hy-v3 profile: {\"profile_version\":2,\"decode_steps\":%lld,\"gpu_samples\":%lld,\"sample_stride\":%d,\"attention_gpu_ms_per_step\":%.6f,"
+        "\"attention_qkv_gpu_ms_per_step\":%.6f,\"attention_core_gpu_ms_per_step\":%.6f,\"attention_output_gpu_ms_per_step\":%.6f,"
         "\"cpu_experts_host_ms_per_step\":%.6f,\"router_wait_host_ms_per_step\":%.6f,"
         "\"decode_wall_ms_per_step\":%.6f,\"collect_host_ms_per_step\":%.6f,"
         "\"gpu_expert_uses\":%lld,\"cpu_expert_uses\":%lld,\"overlapping\":true}\n",
         (long long) p.steps, (long long) p.samples, HyV3ProfileTotals::kStride, p.per_sample(p.attention_gpu_ms),
+        p.per_sample(p.qkv_gpu_ms), p.per_sample(p.core_gpu_ms), p.per_sample(p.output_gpu_ms),
         p.per_step(after.cpu_ms - profile_before_.cpu_ms),
         p.per_step(after.route_wait_ms - profile_before_.route_wait_ms),
         p.per_step(wall_ms), p.per_step(p.collect_host_ms),

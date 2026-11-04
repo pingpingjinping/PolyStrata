@@ -30,6 +30,28 @@ class ProfileLogTest(unittest.TestCase):
         self.assertIn("invalid", format_profile(PREFIX + "{}"))
         self.assertIn("no decode", format_profile(PREFIX + '{"decode_steps":0}'))
 
+    def test_stage_breakdown_keeps_the_legacy_summary_and_adds_a_gpu_line(self):
+        data = dict(decode_steps=33, gpu_samples=3, attention_gpu_ms_per_step=6,
+                    cpu_experts_host_ms_per_step=8, router_wait_host_ms_per_step=2,
+                    decode_wall_ms_per_step=12, collect_host_ms_per_step=.2)
+        legacy = format_profile(PREFIX + json.dumps(data))
+        data.update(profile_version=2, attention_qkv_gpu_ms_per_step=2,
+                    attention_core_gpu_ms_per_step=3, attention_output_gpu_ms_per_step=1)
+        lines = format_profile(PREFIX + json.dumps(data)).splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], legacy)
+        self.assertIn("QKV+norm/RoPE/KV=2.000 ms/step", lines[1])
+        self.assertIn("attention core=3.000 ms/step", lines[1])
+        self.assertIn("output projection=1.000 ms/step", lines[1])
+        self.assertIn("event overhead included", lines[1])
+
+    def test_partial_stage_breakdown_is_not_shown_as_complete(self):
+        data = dict(decode_steps=33, attention_gpu_ms_per_step=6,
+                    cpu_experts_host_ms_per_step=8, router_wait_host_ms_per_step=2,
+                    decode_wall_ms_per_step=12, collect_host_ms_per_step=.2,
+                    attention_qkv_gpu_ms_per_step=2)
+        self.assertIn("invalid", format_profile(PREFIX + json.dumps(data)))
+
     def test_tail_skips_old_requests_and_reads_only_new_profile_lines(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "native.log"
