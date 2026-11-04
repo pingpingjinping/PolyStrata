@@ -178,9 +178,13 @@ folder automatically. The Python interpreter must have the `regex` package,
 which the normal PolyStrata .venv already uses. A standard Python for Windows
 provides `tkinter`.
 
-The Hunyuan pretokenizer uses the Qwen2 regex in llama.cpp; experimental support
-was added in `tools/strata_tokenizer.py`. Unsupported GGUF pretokenizers cause
-an explicit error rather than silently corrupting the input. The visible
+The real Hy-MT2 Q4_K_M GGUF reports `tokenizer.ggml.pre=hunyuan-dense`.
+llama.cpp maps **hunyuan-dense** to the three-stage DeepSeek3/JOYAI
+pretokenization regex (different from the `hunyuan` variant's Qwen2-like
+regex). The experimental tokenizer now does the same, and the test GUI
+explicitly allows `hunyuan-dense`. Unsupported pretokenizers still
+stop with an error instead of silently corrupting the input.
+The Hunyuan-dense fix has regression coverage in `tests/test_hy_v3_tokenizer.py`. The visible
 text being translated can be checked directly in the GUI.
 
 First try a single simple Japanese sentence. Greedy temperature=0 is chosen
