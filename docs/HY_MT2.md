@@ -220,7 +220,8 @@ existing port 8080 is never changed.
 
 The native test uses 4,096 context tokens (adjust up to 8,192 with
 `--context 8192` if memory permits), a 32-token prompt batch, 64 MiB
-staging buffer, 4,096 MiB host expert cache, no speculative MTP drafts,
+staging buffer, **all off-VRAM experts kept in host RAM by default** (instead of the
+former 4,096 MiB cap), no speculative MTP drafts,
 `--window 1` and the existing CUDA 13 DLL directory in the PolyStrata venv.
 The web default temperature is 0.7 (official 30B recommendation); choose
 0 in the web Chat settings to reproduce greedy GUI tests.
@@ -243,3 +244,24 @@ GGUF's Hunyuan template and native PolyStrata tokenization, not llama.cpp.
 and exact logits/text parity with llama.cpp is not yet established.
 Advanced features such as tools, vision and image generation have
 **not** been verified for HY-V3.
+
+### RAM experiment (32 GiB host RAM, RTX 5060 8 GB)
+
+The first web test was around 15 GiB of total Windows RAM used versus around
+9 GiB without the model (a +6 GiB increase), because the launcher explicitly
+set `--ram-experts-mib 4096` and PolyStrata retained only 4 GiB of the ~10.7
+GiB of off-VRAM routed experts. Other expert pages may still be in Windows
+standby/file cache and not counted as the process's working set.
+
+As of this change, `tools/hy_v3_web.py` defaults to `--ram-experts-mib -1`
+(hold **all** off-VRAM expert weights in RAM, if available), following the
+engine's own uncapped default. No new C++ build is required: close the web
+server, `git pull` and restart the launcher. To restore the former memory-
+saving behavior, run the launcher with `--ram-experts-mib 4096`.
+
+Expect more process memory in Task Manager; note that Windows file standby
+cache is reported separately. Benchmarks must use the same prompt and output
+token count, and report prompt and generation speeds independently. Full RAM
+residency may reduce disk reads but does not guarantee speedup when CPU expert
+matrix operations are the bottleneck. Check overall free memory and avoid
+forcing Windows to page other apps out.
