@@ -12,6 +12,9 @@ on:
       - 'tests/test_hy_v3_profile.py'
       - 'tests/hy_v3_profile_test.cpp'
       - 'src/poly/hy_v3_profile.hpp'
+      - 'src/poly/hy_v3_qkv.hpp'
+      - 'tests/hy_v3_qkv_slots_test.cpp'
+      - 'tests/test_hy_v3_qkv_slots.py'
       - 'src/poly/engine.hpp'
       - 'src/poly/main.cpp'
       - 'tools/hy_v3_bench.py'
@@ -73,6 +76,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_hy_v3_profile.py' -v
       - name: CPU scheduling option stays isolated
         run: python -m unittest discover -s tests -p 'test_hy_v3_cpu_down32.py' -v
+      - name: QKV grouping option and GPU-check launcher transport
+        run: python -m unittest discover -s tests -p 'test_hy_v3_qkv_slots.py' -v
   cpu-down32-parity:
     runs-on: ubuntu-latest
     steps:

@@ -1191,10 +1191,15 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
         throw std::runtime_error("--hy-v3-cpu-down32 is an experimental HY-V3-only CPU scheduling option");
     if (o.hy_v3_cpu_down32)
         std::fprintf(stderr, "strata-poly: HY-V3 CPU down tasks: 32 rows (experimental; stock 16)\n");
+    if (o.hy_v3_qkv_slots && (name != "hy_v3" || !o.layer_split.empty() || o.batch != 0 || o.window != 1))
+        throw std::runtime_error("--hy-v3-qkv-slots requires a HY-V3 model, one GPU/sequence and --window 1");
+    if (o.hy_v3_qkv_slots)
+        std::fprintf(stderr, "strata-poly: HY-V3 QKV slots enabled (experimental; single-token projections)\n");
     if (o.hy_v3_profile && (name != "hy_v3" || !o.layer_split.empty() || o.batch != 0 || o.window != 1 || o.dump))
         throw std::runtime_error("--hy-v3-profile requires a HY-V3 model, one GPU/sequence, --window 1 and no --dump");
 #if defined(STRATA_USE_HIP)
     if (o.hy_v3_profile) throw std::runtime_error("--hy-v3-profile is CUDA-only in this version");
+    if (o.hy_v3_qkv_slots) throw std::runtime_error("--hy-v3-qkv-slots is CUDA-only in this version");
 #endif
     // Clover is a qwen35moe model trained to also guess a block of tokens at once (Qwen35)
     const bool qwen35 = name == "qwen35moe" || name == "clover_moe";

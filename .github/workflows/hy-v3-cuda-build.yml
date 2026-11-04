@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/poly/hy_v3.*'
       - 'src/poly/hy_v3_profile.hpp'
+      - 'src/poly/hy_v3_qkv.hpp'
+      - 'tests/hy_v3_qkv_slots_test.cpp'
       - 'src/poly/main.cpp'
       - 'src/poly/engine.cpp'
       - 'src/poly/engine.hpp'
@@ -40,12 +42,12 @@ jobs:
       - name: Configure native Strata Poly for RTX 5060 (sm_120)
         shell: pwsh
         run: |
-          cmake -S . -B build-hyv3 -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=120 -DSTRATA_ORCA_Q4KS_MMQ=OFF -DSTRATA_MMQ_TAB=OFF
+          cmake -S . -B build-hyv3 -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_HY_QKV_TEST=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DSTRATA_ORCA_Q4KS_MMQ=OFF -DSTRATA_MMQ_TAB=OFF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Compile strata-poly target
+      - name: Compile strata-poly and GPU QKV check (compile only)
         shell: pwsh
         run: |
-          cmake --build build-hyv3 --target strata-poly --config Release --parallel 2
+          cmake --build build-hyv3 --target strata-poly poly_hy_qkv_slots_test --config Release --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify executable exists
         shell: pwsh
@@ -53,10 +55,15 @@ jobs:
           $exe = Get-ChildItem -Path build-hyv3 -Filter strata-poly.exe -Recurse -File | Select-Object -First 1
           if (-not $exe) { throw "strata-poly.exe not produced" }
           Write-Host "Compiled: $($exe.FullName)"
+          $checker = Get-ChildItem -Path build-hyv3 -Filter poly_hy_qkv_slots_test.exe -Recurse -File | Select-Object -First 1
+          if (-not $checker) { throw "poly_hy_qkv_slots_test.exe not produced" }
+          Write-Host "Compiled (not run; no GPU on CI): $($checker.FullName)"
       - name: Upload experimental strata-poly executable
         uses: actions/upload-artifact@v4
         with:
           name: HyV3-Windows-sm120-strata-poly-exe
-          path: build-hyv3/**/strata-poly.exe
+          path: |
+            build-hyv3/**/strata-poly.exe
+            build-hyv3/**/poly_hy_qkv_slots_test.exe
           if-no-files-found: error
           retention-days: 14

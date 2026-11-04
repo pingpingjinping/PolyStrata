@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -77,7 +78,7 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
                  stage_mib: int = 128, stage_read_mib: int = 2048,
                  prompt_cache: int = 6, expert_profile: Path | None = None,
                  threads: int | None = None, profile_decode: bool = False,
-                 cpu_down32: bool = False) -> dict:
+                 cpu_down32: bool = False, qkv_slots: bool = False) -> dict:
     """A private run config understood directly by serve/server.py."""
     config = {
         "exe": str(exe),
@@ -116,7 +117,25 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
         config["args"] += ["--hy-v3-profile"]
     if cpu_down32:
         config["args"] += ["--hy-v3-cpu-down32"]
+    if qkv_slots:
+        config["args"] += ["--hy-v3-qkv-slots"]
     return config
+
+
+def run_qkv_check(exe: Path, lib_dirs: list[str]) -> int:
+    checker = exe.with_name("poly_hy_qkv_slots_test" + exe.suffix)
+    if not checker.is_file():
+        print(f"[hy-v3] Missing GPU check executable: {checker}. Extract both EXEs from the new artifact.",
+              file=sys.stderr)
+        return 1
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([*lib_dirs, env.get("PATH", "")])
+    print("[hy-v3] GPU QKV bitwise check (synthetic weights; no model/server loaded)", flush=True)
+    try:
+        return subprocess.run([str(checker)], cwd=str(checker.parent), env=env, check=False).returncode
+    except OSError as exc:
+        print(f"[hy-v3] GPU check could not start: {exc}", file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,6 +166,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cpu-down32", action="store_true",
                     help="experimental HY-V3 CPU down scheduling: 32 rows/task instead of 16; "
                          "requires the new EXE; compare at the same thread count")
+    ap.add_argument("--qkv-slots", action="store_true",
+                    help="experimental single-token grouped Q4 Q/K/V projections; run --check-qkv-slots first")
+    ap.add_argument("--check-qkv-slots", action="store_true",
+                    help="run the bundled GPU bitwise/graph check and exit without loading the model or server")
     ap.add_argument("--ram-experts-mib", type=int, default=-1,
                     help="-1 holds all experts outside VRAM in RAM (~10.7 GiB on this model); "
                          "set 4096 to restore the previous memory-saving mode")
@@ -156,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     model = args.model.expanduser().resolve()
     if not exe.is_file():
         ap.error(f"missing experimental strata-poly.exe: {exe}")
+    if args.check_qkv_slots:
+        return run_qkv_check(exe, cuda13_lib_dirs(exe))
     if not model.is_file():
         ap.error(f"missing GGUF: {model}")
     if args.port < 1024 or args.port > 65535:
@@ -176,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--threads must be positive")
     if args.ram_experts_mib != -1 and not 1024 <= args.ram_experts_mib <= 16384:
         ap.error("--ram-experts-mib must be -1 or 1024..16384")
+    if args.qkv_slots:
+        checked = run_qkv_check(exe, cuda13_lib_dirs(exe))
+        if checked != 0:
+            return checked
 
     runtime = RUNTIME
     runtime.mkdir(parents=True, exist_ok=True)
@@ -196,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                           prompt_batch=args.prompt_batch, stage_mib=args.stage_mib,
                           stage_read_mib=args.stage_read_mib, prompt_cache=args.prompt_cache,
                           expert_profile=runtime / "hy-mt2-experts.bin" if args.learn_experts else None,
-                          threads=args.threads, profile_decode=args.profile_decode, cpu_down32=args.cpu_down32)
+                          threads=args.threads, profile_decode=args.profile_decode,
+                          cpu_down32=args.cpu_down32, qkv_slots=args.qkv_slots)
     config_path = runtime / "strata-hy-mt2.json"
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -207,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
           f"read stage={args.stage_read_mib} MiB, prompt cache={args.prompt_cache}", flush=True)
     if args.cpu_down32:
         print("[hy-v3] Experimental CPU down tasks: 32 rows (stock 16)", flush=True)
+    if args.qkv_slots:
+        print("[hy-v3] Experimental single-token QKV slots ON", flush=True)
     print("[hy-v3] Close the other PolyStrata server first to free VRAM. Ctrl+C stops this server.",
           flush=True)
     print("[hy-v3] Send a translation instruction (e.g., 'Translate into Korean...') with the Japanese text.",

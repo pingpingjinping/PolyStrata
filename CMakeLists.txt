@@ -115,6 +115,7 @@ option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # native-experts section far below, so a first configure registered four tests fewer than the second)
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
 option(STRATA_BUILD_HY_CPU_TEST "Build standalone HY-V3 CPU scheduling parity test (no GPU)" OFF)
+option(STRATA_BUILD_HY_QKV_TEST "Build opt-in HY-V3 QKV slots GPU parity executable" OFF)
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
@@ -2122,6 +2123,13 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
                                            ${_strata_gpu_blas_target} ${_strata_gpu_runtime_target}
                                            ${_strata_poly_driver}
                                            Threads::Threads)
+  if(STRATA_BUILD_HY_QKV_TEST AND STRATA_ENABLE_CUDA)
+    add_executable(poly_hy_qkv_slots_test tests/hy_v3_qkv_slots_test.cpp)
+    target_include_directories(poly_hy_qkv_slots_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                               ${CMAKE_CURRENT_SOURCE_DIR}/src/poly ${_strata_gpu_include_directories})
+    target_link_libraries(poly_hy_qkv_slots_test PRIVATE strata_kernels ggml-cpu ggml-base
+                          ${_strata_gpu_runtime_target} Threads::Threads)
+  endif()
   # needs the model file, so it is run by hand: poly_expert_parity MODEL.gguf
   add_executable(poly_expert_parity src/poly/expert_parity.cpp src/poly/cpu_experts.cpp src/poly/kernels.cu)
   target_include_directories(poly_expert_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include

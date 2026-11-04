@@ -2,6 +2,7 @@
 // Adapted from PolyStrata's Flint backend. Validate logits/token IDs against
 // llama.cpp src/models/hy-v3.cpp before trusting results.
 #include "hy_v3.hpp"
+#include "hy_v3_qkv.hpp"
 
 #include "runtime.hpp"
 #include "strata/poly/kernels.hpp"
@@ -49,6 +50,15 @@ void HyV3::load_geometry() {
     head_dim_ = shape_i("attention.key_length");
     need(n_head_ == 32 && n_kv_ == 4 && head_dim_ == 128,
          "expected 32 query heads, 4 KV heads and 128-dimensional heads");
+    if (opt_.hy_v3_qkv_slots) {
+        for (int il = 0; il < n_layer_; ++il) {
+            const auto* q = tensor(il, "attn_q.weight");
+            const auto* k = tensor(il, "attn_k.weight");
+            const auto* v = tensor(il, "attn_v.weight");
+            need(q && k && v && q->type == 12 && k->type == 12 && (v->type == 12 || v->type == 14),
+                 ("--hy-v3-qkv-slots needs Q4_K Q/K and Q4_K or Q6_K V at blk." + std::to_string(il)).c_str());
+        }
+    }
     need(shape_i("attention.value_length") == head_dim_,
          "keys and values have different widths");
 
@@ -292,13 +302,15 @@ void HyV3::attn(Block& B, int64_t pos, int n, [[maybe_unused]] int il) {
     if (rows_of_) return attn_rows(B, n);
     const long long* at = recording_ ? at_ : nullptr;   // a recorded launch: the tokens from what at_ holds
     const int n_rot = B.rope ? head_dim_ : 0;
-    lin(B.wq, xn_, qraw_, n, xq_);
+    const bool grouped = opt_.hy_v3_qkv_slots && n == 1 &&
+        hy_v3_qkv_slots(B.wq.p, B.wk.p, B.wv.p, (int) B.wv.type, xq_, qraw_, kraw_, v_, st_);
+    if (!grouped) lin(B.wq, xn_, qraw_, n, xq_);
     head_norm_rope(qraw_, head_dim_, fp(B.q_norm), q_, head_dim_, n_head_, n_rot, theta_scale_, pos, n, rms_eps_, st_,
                    nullptr, nullptr, 1, at ? at + 1 : nullptr);
-    lin(B.wk, xn_, kraw_, n, xq_);
+    if (!grouped) lin(B.wk, xn_, kraw_, n, xq_);
     head_norm_rope(kraw_, head_dim_, fp(B.k_norm), k_, head_dim_, n_kv_, n_rot, theta_scale_, pos, n, rms_eps_, st_,
                    nullptr, nullptr, 1, at ? at + 1 : nullptr);
-    lin(B.wv, xn_, v_, n, xq_);
+    if (!grouped) lin(B.wv, xn_, v_, n, xq_);
     store(k_, B, pos, n, false);
     store(v_, B, pos, n, true);
 #if !defined(STRATA_USE_HIP)

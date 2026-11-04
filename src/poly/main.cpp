@@ -1057,6 +1057,7 @@ void usage() {
                  "  --threads N            CPU threads for the experts that are not in VRAM (default: all usable)\n"
                  "  --hy-v3-profile        CUDA HY-V3 decode diagnostics (requires --window 1 --lookup 0)\n"
                  "  --hy-v3-cpu-down32     opt-in HY-V3 CPU down scheduling experiment (32 rows/task; stock 16)\n"
+                 "  --hy-v3-qkv-slots      opt-in CUDA HY-V3 grouped QKV projections (--window 1 --lookup 0)\n"
                  "  --vram-reserve-mib N   VRAM left free beside the expert cache, 256 at least (default: a\n"
                  "                         thirty-second of the card, 256 to 768, or a sixteenth, 512 to 1024,\n"
                  "                         when the PC's free RAM is within 4 GiB of the model's files, and then\n"
@@ -1192,6 +1193,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-graphs") o.graphs = false;
         else if (a == "--hy-v3-profile") o.hy_v3_profile = true;
         else if (a == "--hy-v3-cpu-down32") o.hy_v3_cpu_down32 = true;
+        else if (a == "--hy-v3-qkv-slots") o.hy_v3_qkv_slots = true;
         else if (a == "--kv-whole") o.kv_grow = false;
         else if (a == "--kv") {
             const std::string fmt = val();
@@ -1260,6 +1262,10 @@ int main(int argc, char** argv) {
     }
     if (o.hy_v3_profile && lookup != 0) {
         std::fprintf(stderr, "strata-poly: --hy-v3-profile requires --lookup 0 (single-token decode)\n");
+        return 2;
+    }
+    if (o.hy_v3_qkv_slots && lookup != 0) {
+        std::fprintf(stderr, "strata-poly: --hy-v3-qkv-slots requires --lookup 0 (single-token decode)\n");
         return 2;
     }
     if (o.batch < 0 || o.batch > 8 || check < 0 || check > o.batch || (check > 0 && (int) ids.size() <= check)) {

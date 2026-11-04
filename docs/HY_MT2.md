@@ -371,6 +371,82 @@ are not loaded. `--json --projection-types` adds the same data under
 `attention_projections`; without the new flag, the existing report is unchanged.
 This is metadata for choosing the next experiment, not a speed/quality test.
 
+The user's actual Q4_K_M header reported 48 trunk layers, no MTP, and:
+
+| Projection | Stored shape (input, output) | Actual types across trunk layers |
+| --- | --- | --- |
+| Q | 2048, 4096 | Q4_K on all 48 |
+| K | 2048, 512 | Q4_K on all 48 |
+| V | 2048, 512 | Q4_K on 24; Q6_K on 24 |
+| Output | 4096, 2048 | Q4_K on all 48 |
+
+### Step 4: group single-token QKV launches (experimental, off by default)
+
+`--qkv-slots` passes native `--hy-v3-qkv-slots`. The opt-in path views the Q
+matrix as eight consecutive 512-row pieces, plus K and (where Q4_K) V, and
+passes their existing device pointers to the existing MMVQ slots kernel. The
+shared input remains the original Q8_1 activation. No model weights are copied,
+repacked or re-quantized, and no new model-weight VRAM is allocated. Output
+projection and attention core are unchanged.
+
+On Q4_K V layers, three projection launches become one with ten slots. On
+Q6_K V layers, Q/K use nine Q4 slots and V keeps its original Q6_K launch,
+so three become two. Q/K normalization follows the completed projections;
+their input values and RoPE positions are unchanged. Only single-token evals
+use the grouping (including a final one-token prefill eval); larger prompt
+batches keep the original path. Unsupported Q/K/V formats, other model
+families, HIP, multiple GPUs/sequences, window other than 1 or lookup other
+than 0 are rejected when this option is requested. The default-off attention
+operations/order match the prior source after removing only the opt-in dispatch.
+
+**The GPU check must pass before testing this option.** Download the new Windows
+artifact and put **both** `strata-poly.exe` and `poly_hy_qkv_slots_test.exe` in
+`Desktop\PolyStrata`. Close the model server first. Then:
+
+```powershell
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --check-qkv-slots
+```
+
+This runs a small GPU-only projection test with synthetic real ggml Q4_K/Q6_K
+weights in the actual 2048/4096/512 geometry. It compares every Q/K/V float bit
+with separate native launches, checks output guards, and reuses captured CUDA
+graphs with zero, small, normal and larger inputs. It is designed to check
+24 cases / 122,880 projection values in eager execution and graph replay.
+CI compiles the EXE but has no GPU and does **not** run or certify the test.
+No real model/server is loaded; the Python runner supplies private CUDA DLL
+paths and returns the native exit code. Missing EXE, missing GPU, CUDA errors
+or bit differences fail explicitly. If it fails, leave `--qkv-slots` off and
+report the failure.
+
+The web launcher also runs this check before loading a model whenever
+`--qkv-slots` is enabled, and stops if it fails. This does not establish whole
+model/reference-engine parity; compare translation output as well.
+
+After a PASS, compare this same new executable with the option off and on:
+
+```powershell
+# First baseline, with the option absent.
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --cpu-down32 --profile-decode
+# Stop the server; repeat with only --qkv-slots added.
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --cpu-down32 --profile-decode --qkv-slots
+```
+
+Use a new chat, saved web Temperature 0, the same 100 Japanese lines and no
+expert learning. Report the `done`, profile and attention-detail lines for
+each. If promising, repeat without profiling before claiming a throughput
+gain. This targets QKV preparation, not the output projection or all of the
+65% preparation/output share. Reduced launch count is not proof of speedup;
+different scheduling can also be slower. No GPU result or speedup for this
+experiment has been measured in the development environment.
+Local validation passed all 40 Hy Python tests and the existing 480-test
+regression suite (477 passed, 3 skipped for missing reference tokenizer data).
+The grouped helper header and `main.cpp` passed host syntax checks, and a
+CPU-only CMake configure succeeded. These are not GPU parity results. CUDA
+compilation is delegated to the Windows CI build; HIP/SYCL validation was not
+available locally and this PR remains a Draft.
+
 ### Remaining gates
 
 - [ ] Same-token greedy Hy output/logit comparison against llama.cpp, same GGUF.
