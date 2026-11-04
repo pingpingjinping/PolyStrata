@@ -190,3 +190,56 @@ text being translated can be checked directly in the GUI.
 First try a single simple Japanese sentence. Greedy temperature=0 is chosen
 for debugging; the 30B model card recommends 0.7 for normal use. **Native
 model output correctness is still unverified and the PR stays a draft.**
+
+
+## PolyStrata web UI for native Hy-MT2 (experimental, isolated)
+
+The experimental branch also offers the **normal PolyStrata web chat UI**,
+powered by the same native `strata-poly.exe --serve` binary used in the
+desktop translation test. The launcher extracts the tokenizer and model's
+own chat template from GGUF metadata, creates a self-contained run config
+under `.hy-v3-web/` (ignored by Git) and runs the existing
+`serve.server` web/API server. It does **not** replace the old PolyStrata
+server or overwrite the existing Gemma 4 model configuration.
+
+Windows PowerShell:
+
+```powershell
+# Close the Gemma 4 PolyStrata server and the HyV3 desktop translation window first (free VRAM).
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py
+```
+
+Open **http://127.0.0.1:18081/** if the browser doesn't open automatically.
+The OpenAI-compatible endpoint is
+**http://127.0.0.1:18081/v1/chat/completions**.
+The browser, API and server monitoring are the existing PolyStrata implementations.
+Close with `Ctrl+C`. The default server is bound to loopback only and the
+existing port 8080 is never changed.
+
+The native test uses 4,096 context tokens (adjust up to 8,192 with
+`--context 8192` if memory permits), a 32-token prompt batch, 64 MiB
+staging buffer, 4,096 MiB host expert cache, no speculative MTP drafts,
+`--window 1` and the existing CUDA 13 DLL directory in the PolyStrata venv.
+The web default temperature is 0.7 (official 30B recommendation); choose
+0 in the web Chat settings to reproduce greedy GUI tests.
+
+Hy-MT2 is **primarily a translation model** with **no default system prompt**.
+To ask for Korean output, include the explicit instruction in the message:
+
+```text
+Translate the following text into Korean. Note that you should only output the translated result without any additional explanation:
+
+今日はいい天気ですね。
+明日も晴れるといいな。
+```
+
+For custom locations, run `python tools/hy_v3_web.py --help` and pass
+`--exe` or `--model`. The tokenizer/chat template are automatically
+extracted only if not already cached. This implementation uses the actual
+GGUF's Hunyuan template and native PolyStrata tokenization, not llama.cpp.
+**Important:** This integration is untested on the user's Windows machine
+and exact logits/text parity with llama.cpp is not yet established.
+Advanced features such as tools, vision and image generation have
+**not** been verified for HY-V3.
