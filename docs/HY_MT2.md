@@ -488,13 +488,41 @@ token counts alone do not prove equal generated text/IDs. Keep the feature
 opt-in and retain the full-model/reference parity gate. Do not add this
 percentage to the earlier CPU experiment from a different native build.
 
-The next practical combination can re-enable `--learn-experts` while retaining
+The practical combination re-enables `--learn-experts` while retaining
 6 threads, CPU down32 and QKV grouping, with profiling off. A pre-existing
 `.hy-v3-web/hy-mt2-experts.bin` is read on restart; if absent, the first run only
 starts collecting the profile, and another restart is needed to apply it.
 This changes cache ranking and is separate from the QKV-only comparison above.
-No result for that combined cache-learning run has been collected yet. These
-measurement/documentation updates require no new executable.
+
+The user subsequently reported:
+
+| Run with cache learning requested | Output tokens | Generation tok/s | Expert hits | Finish |
+| --- | --- | --- | --- | --- |
+| First combined run | 1324 | 77.5 | 74.1% | stop, cancel=False |
+| Repeat after requested restart | 1325 | 77.3 | 74.1% | stop, cancel=False |
+
+The first run's startup log confirmed GPU QKV parity PASS, CPU down32 and QKV
+slots ON, batch 2048, context 4096 and config temperature 0. The initial
+profile-file existence result and native profile-read confirmation were not
+provided, so its prior state is unknown. Both short runs are around 77 tok/s
+on this same 100-line task. Compared with the single learning-off result
+(76.4 tok/s, 73.6% hits), this is a small nominal difference, not an isolated
+or statistically established cache-learning speedup. Output counts differ,
+and translated text/request hashes were not captured. Stop repeating this
+same short input here; the next validation should use real subtitle work,
+varying consecutive requests, cancellation/restart and memory monitoring.
+Neither these two runs nor synthetic projection parity establish those
+stability gates or whole-model numerical correctness.
+
+Provisional normal-use command for this user's PC (not a global preset):
+
+```powershell
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 2048 --threads 6 --temperature 0 --cpu-down32 --qkv-slots --learn-experts
+```
+
+Save web Temperature 0 as well. Leave profiling off for normal use. These
+measurement/documentation updates require no new executable; engine/launcher
+defaults remain unchanged and experimental controls are still opt-in.
 
 ### Remaining gates
 
