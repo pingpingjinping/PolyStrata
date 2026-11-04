@@ -29,6 +29,7 @@ BACKENDS = {
     "lfm2moe": "lfm2moe",
     "flint": "flint",
     "kolibri1": "kolibri1",
+    "hy_v3": "hy_v3",  # experimental native Hy-MT2 backend
 }
 # a routed expert's tensors: they stay in the file and are held in VRAM as far as it has room
 EXPERT = re.compile(r"\.ffn_(gate|up|down|gate_up)_exps\.weight$")
