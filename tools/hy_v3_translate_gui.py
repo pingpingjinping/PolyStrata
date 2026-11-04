@@ -152,7 +152,7 @@ class TranslateWindow:
             if md.get("general.architecture") != "hy_v3":
                 raise RuntimeError("hy_v3 GGUF 파일이 아닙니다.")
             pre = md.get("tokenizer.ggml.pre")
-            if pre not in ("hunyuan", "qwen2"):
+            if pre not in ("hunyuan", "hunyuan-dense", "qwen2"):
                 raise RuntimeError(
                     f"지원 확인이 필요한 토크나이저 pre={pre!r}. 잘못된 토큰으로 "
                     "번역하지 않도록 실행을 중단했습니다.")
