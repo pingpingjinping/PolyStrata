@@ -5,6 +5,8 @@ on:
       - 'src/poly/hy_v3_router.hpp'
       - 'tests/hy_v3_router_test.cpp'
       - 'tools/inspect_hy_v3_gguf.py'
+      - 'tools/strata_tokenizer.py'
+      - 'tools/hy_v3_translate_gui.py'
       - 'src/poly/hy_v3.hpp'
       - 'src/poly/hy_v3.cpp'
       - 'src/poly/engine.cpp'
@@ -26,3 +28,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_hy_v3_native_wiring.py' -v
       - name: Inspect synthetic HY-V3 GGUF headers
         run: python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
+      - name: Syntax check native translation test GUI
+        run: python -m py_compile tools/hy_v3_translate_gui.py tools/strata_tokenizer.py
