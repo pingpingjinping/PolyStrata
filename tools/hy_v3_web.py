@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch experimental Hy-MT2 in PolyStrata's existing web UI, isolated from other models.
+r"""Launch experimental Hy-MT2 in PolyStrata's existing web UI, isolated from other models.
 
 Windows from the experimental clone:
     & "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py
@@ -74,9 +74,10 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
                  port: int, context: int, lib_dirs: list[str], temperature: float,
                  ram_experts_mib: int = -1, prompt_batch: int = 1024,
                  stage_mib: int = 128, stage_read_mib: int = 2048,
-                 prompt_cache: int = 6) -> dict:
+                 prompt_cache: int = 6, expert_profile: Path | None = None,
+                 threads: int | None = None) -> dict:
     """A private run config understood directly by serve/server.py."""
-    return {
+    config = {
         "exe": str(exe),
         "args": [
             "--model", str(model),
@@ -105,6 +106,11 @@ def build_config(*, exe: Path, model: Path, tokenizer: Path, runtime: Path,
         "reasoning_effort": "none",
         "fit_max_tokens": True,
     }
+    if expert_profile is not None:
+        config["args"] += ["--expert-profile", str(expert_profile)]
+    if threads is not None:
+        config["args"] += ["--threads", str(threads)]
+    return config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,6 +129,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="temporarily widen staging from expert VRAM during long prefill (default 2048; 0 to disable)")
     ap.add_argument("--prompt-cache", type=int, default=6,
                     help="conversation prompt checkpoints (default 6; 0 to disable)")
+    ap.add_argument("--learn-experts", action="store_true",
+                    help="opt in to a private persistent expert-use profile for translation; "
+                         "restart after representative translations to use its cache ranking")
+    ap.add_argument("--threads", type=int,
+                    help="CPU threads for off-VRAM experts (default: engine auto); "
+                         "compare physical cores with auto when CPU expert work dominates")
     ap.add_argument("--ram-experts-mib", type=int, default=-1,
                     help="-1 holds all experts outside VRAM in RAM (~10.7 GiB on this model); "
                          "set 4096 to restore the previous memory-saving mode")
@@ -148,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--stage-read-mib must be 0..4096")
     if not 0 <= args.prompt_cache <= 32:
         ap.error("--prompt-cache must be 0..32")
+    if args.threads is not None and args.threads < 1:
+        ap.error("--threads must be positive")
     if args.ram_experts_mib != -1 and not 1024 <= args.ram_experts_mib <= 16384:
         ap.error("--ram-experts-mib must be -1 or 1024..16384")
 
@@ -168,7 +182,9 @@ def main(argv: list[str] | None = None) -> int:
                           port=args.port, context=args.context, lib_dirs=lib_dirs,
                           temperature=args.temperature, ram_experts_mib=args.ram_experts_mib,
                           prompt_batch=args.prompt_batch, stage_mib=args.stage_mib,
-                          stage_read_mib=args.stage_read_mib, prompt_cache=args.prompt_cache)
+                          stage_read_mib=args.stage_read_mib, prompt_cache=args.prompt_cache,
+                          expert_profile=runtime / "hy-mt2-experts.bin" if args.learn_experts else None,
+                          threads=args.threads)
     config_path = runtime / "strata-hy-mt2.json"
     temporary = config_path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")

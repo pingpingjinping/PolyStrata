@@ -5126,7 +5126,10 @@ class TelemetryNoDisks(unittest.TestCase):
         vm = SimpleNamespace(total=64 * 2**30, available=40 * 2**30)
         fake = SimpleNamespace(cpu_count=lambda logical=True: 8, cpu_percent=lambda interval=None: 12.5,
                                virtual_memory=lambda: vm, disk_io_counters=lambda: None)
-        with mock.patch.dict(sys.modules, {"psutil": fake}):
+        # This test supplies host memory itself; a real container's cgroup
+        # limit must not replace the fake reading in Telemetry.sample().
+        with mock.patch.dict(sys.modules, {"psutil": fake}), \
+                mock.patch.object(telemetry, "Cgroup", return_value=SimpleNamespace(cpus=None, mem=None)):
             t = telemetry.Telemetry(extra=lambda: {"tok_s": 1.5})
             try:
                 deadline = time.monotonic() + 5.0

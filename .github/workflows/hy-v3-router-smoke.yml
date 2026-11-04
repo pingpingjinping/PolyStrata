@@ -8,8 +8,11 @@ on:
       - 'tools/strata_tokenizer.py'
       - 'tools/hy_v3_translate_gui.py'
       - 'tools/hy_v3_web.py'
+      - 'tools/hy_v3_bench.py'
+      - 'tests/test_hy_v3_bench.py'
       - 'serve/models.py'
       - 'serve/server.py'
+      - 'serve/test_server.py'
       - 'tests/test_hy_v3_tokenizer.py'
       - 'tests/test_hy_v3_web.py'
       - 'src/poly/hy_v3.hpp'
@@ -41,3 +44,14 @@ jobs:
           python -m unittest discover -s tests -p 'test_hy_v3_tokenizer.py' -v
       - name: Validate isolated HY-V3 web launcher
         run: python -m unittest discover -s tests -p 'test_hy_v3_web.py' -v
+      - name: Install Python web regression dependencies
+        run: python -m pip install --disable-pip-version-check jinja2 psutil
+      - name: Existing Gemma and Qwen web/config regression (no GPU)
+        run: >-
+          python -m unittest serve.test_gemma serve.test_q36_config
+          serve.test_models serve.test_server serve.test_control_cancel
+          serve.test_context_overflow serve.test_fatal_recovery
+          serve.test_runconfig serve.test_request_accounting
+          tools.test_setup_qwen36 tools.test_strata_tokenizer -v
+      - name: Translation benchmark transport and accounting
+        run: python -m unittest discover -s tests -p 'test_hy_v3_bench.py' -v

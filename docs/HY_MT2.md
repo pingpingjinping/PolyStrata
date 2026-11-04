@@ -1,297 +1,174 @@
-# Experimental Hy-MT2-30B-A3B (HY-V3) support
+# Experimental Hy-MT2-30B-A3B (HY-V3)
 
-This branch contains an **experimental native HyV3 engine implementation** whose Windows CUDA 13.2/sm_120 **compile has passed**, but whose native decode has been smoke-tested on the official Q4_K_M GGUF, but whose output correctness has NOT been checked against llama.cpp. It is not ready for production translation.
-The `hy_v3` architecture now has an experimental registration in `Engine::open()` solely for development testing. **A successful load does not prove correct inference**; do not merge until both CUDA compilation and llama.cpp parity tests pass.
+Native `hy_v3` support runs through `strata-poly` and the existing PolyStrata
+web/API server. The feature stays opt-in in this fork. **Keep PR #1 a draft
+until the real-device gates below pass.**
 
-## Verified upstream references
+## Verified status, 2026-11-04 KST
 
-- Official weights: https://huggingface.co/tencent/Hy-MT2-30B-A3B-GGUF
-- llama.cpp reference: https://github.com/ggml-org/llama.cpp/blob/master/src/models/hy-v3.cpp
-- GGUF architecture: `hy_v3`; official Q4_K_M checkpoint: approximately 18.2 GB.
-- PolyStrata: `strata-poly` handles some architectures using the shared `Engine`
-  class, but `hy_v3` is not currently registered.
+| Area | Evidence | Remaining gate |
+| --- | --- | --- |
+| Windows CUDA build | CUDA 13.2 / sm_120 compile succeeded; the first failure was a missing CI `cublas_dev` package | Latest-head CI must be green |
+| Real model load/decode | User loaded official Q4_K_M on RTX 5060 8 GB / Windows / 32 GB RAM; 48 layers, 1 dense + 47 MoE, 766 tensors | Numerical parity with llama.cpp |
+| Translation | User's 100-line test returned 100 Korean lines, 1,327 output tokens, reported 68.3 generation tok/s | Full semantic review; controlled throughput comparison |
+| Python regression | Existing Gemma/Qwen config, tokenizer, web API, cancellation and recovery suites; no GPU required | Actual Gemma 4 and Qwen3.6 load/translation on the new executable |
+| Performance settings | Launcher exposes batch, staging and host-expert RAM controls | Same-input 512/1024/2048 sweep and memory samples |
+| Stability | Offline context-overflow, cancellation and engine recovery tests | Long input, repeated requests, restart and RAM/VRAM pressure on RTX 5060 |
 
-## Current status
+The 68.3 tok/s report used the former experimental settings (batch 32,
+stage 64 MiB, no prompt checkpoints). The first 16-token ID-only smoke test
+reported 7.86 tok/s and 48.5% VRAM expert hits; it was a different workload
+and is not a translation benchmark. Neither number proves numerical parity.
+Current larger-batch defaults have not yet been measured on that PC.
 
-- [x] Fork-specific feature branch, leaving `main` untouched
-- [x] Independent CPU reference for HY-V3 sigmoid/selection-bias/top-k routing
-- [x] CPU-only deterministic routing smoke test
-- [x] Header-only Python GGUF inspector and synthetic-file tests (both expert-bias spellings)
-- [x] Standalone GGUF metadata and tensor inventory preflight (without loading weights)
-- [x] Initial model-specific metadata checks and GGUF tensor-loading code in a new `HyV3 : Engine` subclass (NOT RUN on the real GGUF)
-- [x] Implemented full-attention/Q-K RMSNorm/RoPE/KV code by adapting Flint's existing inference paths (NOT parity-tested)
-- [x] Implemented dense lead block and SwiGLU (NOT parity-tested)
-- [x] Connected routed experts to the shared PolyStrata RAM/VRAM cache and inherited shared-expert execution (NOT parity-tested)
-- [x] Connected existing GPU sigmoid/biased-top-k router path with HY-V3 selection bias and scaling (NOT parity-tested)
-- [ ] Model tokenizer/chat template and installer integration
-- [x] Compile Windows CUDA 13.2 sm_120 binary in GitHub Actions (no GPU)
-- [x] Load actual Q4_K_M model and generate 1 then 16 tokens on RTX 5060 8 GB (load/decode smoke test only)
-- [ ] Verify output tokens/logits against llama.cpp on identical input token IDs
-- [x] Windows CUDA build + RTX 5060 8 GB / RAM 32 GB first smoke test (numerical correctness NOT yet established)
+References:
 
-The first tests isolate correctness-sensitive parts of the model. The standalone routing reference in `src/poly/hy_v3_router.hpp` is not called by the inference engine; the engine uses the shared GPU `route_rows()` path, which must still be checked numerically against the reference.
+- [Official model and configuration](https://huggingface.co/tencent/Hy-MT2-30B-A3B)
+- [Official GGUF](https://huggingface.co/tencent/Hy-MT2-30B-A3B-GGUF) (Q4_K_M approximately 18.2 GB)
+- [llama.cpp reference graph](https://github.com/ggml-org/llama.cpp/blob/master/src/models/hy-v3.cpp)
 
-## Run CPU-only test (no model download)
+## Run the isolated web/API launcher
 
-```sh
-c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_router_test.cpp -o hy_v3_router_test
-./hy_v3_router_test
-```
-
-## Compare translation quality with llama.cpp (temporary baseline)
-
-On Windows, use a recent llama.cpp release with HY-V3 support:
+Close other model servers to free VRAM. In PowerShell:
 
 ```powershell
-llama-server -hf tencent/Hy-MT2-30B-A3B-GGUF:Q4_K_M -c 8192 -ngl 20 --port 18080
-```
-
-Adjust `-ngl` for available VRAM. The baseline API is `http://127.0.0.1:18080/v1`.
-Do **not** point it to PolyStrata's usual port 8080. Measure the same Japanese subtitle
-lines and compare meaning, formatting, prompt processing and generation speed against Gemma 4.
-This fallback is not native PolyStrata acceleration.
-
-## Notes for native implementation
-
-HY-V3 from llama.cpp has 48 trunk layers in the 30B-A3B variant.
-Its full-attention blocks have per-head Q/K norms and separate RoPE; the routed MoE path
-uses sigmoid gating with a *selection-only bias*, and the always-active shared expert
-is summed with the routed ones. Some layers may have an ordinary dense FFN.
-Optional MTP/NextN weights must not be executed as ordinary trunk layers.
-
-Port the full tensor shapes and routing flags from the upstream reference.
-Validate prefill and decode **token-by-token** against llama.cpp before benchmarking.
-
-## Validate an existing downloaded GGUF (no GPU needed)
-
-```powershell
-python tools/inspect_hy_v3_gguf.py "C:\\models\\Hy-MT2-30B-A3B-Q4_K_M.gguf" --json
-```
-
-The inspector reads **only the GGUF header and tensor inventory** (not 18.2 GB of weights).
-It verifies architecture, attention tensors, dense lead block, MoE expert tensor sets and
-both `blk.N.exp_probs_b` and `blk.N.exp_probs_b.bias` names. The latter spelling is seen
-in older HY-V3 quantizations, per https://github.com/ggml-org/llama.cpp/issues/25657.
-A PASS is not evidence that the model runs or produces correct translations.
-
-```sh
-python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
-```
-
-## Native prototype status (NOT production ready)
-
-`src/poly/hy_v3.cpp` and `hy_v3.hpp` implement a first-pass experimental decoder using
-PolyStrata's tested Flint attention and shared-expert MoE code as a base, adapted to
-Hy-MT2's **full causal attention**, **RoPE on every layer**, **no sink logits**, Q/K RMSNorm,
-one dense leading block and 47 MoE blocks. The decoder is registered in `Engine::open()`
-and added to all three CMake targets that link `engine.cpp`.
-
-The native implementation hard-checks the known Hy-MT2-30B-A3B geometry (48 layers,
-2048 hidden, 32/4 attention heads, head dim 128, 128 experts, 8 active experts,
-6912 dense FFN, 768 expert FFN). It requires selection bias tensors in either of
-the two known GGUF spellings. It disables MTP/NextN draft decoding until correctly ported.
-
-**Unverified:** actual model load and runtime tensor shapes, GPU routing parity,
-exact output logits, tokenizer compatibility, Windows inference, memory and speed.
-Neither the synthetic GGUF CI, source-wiring CI, nor Windows **compile-only** CI checks these. Run the inspector
-on the real checkpoint first; then compile and compare greedy output against llama.cpp.
-Do not merge this draft or use it for subtitle production until those checks pass.
-
-The upstream official configuration is documented at
-https://huggingface.co/tencent/Hy-MT2-30B-A3B/blob/main/config.json .
-
-## Windows build result and first native model smoke test
-
-The first Windows CI attempt failed at CMake configuration because the CI runner lacked
-`cublas_dev`. After adding that package, [Windows CUDA 13.2 / sm_120 build #41648984135](https://github.com/pingpingjinping/PolyStrata/actions/runs/41648984135)
-completed successfully, including `strata-poly.exe` verification. The runner has no GPU;
-**this is compile-only success, not inference success**.
-
-A follow-up workflow revision uploads the experimental `strata-poly.exe` as an
-artifact for manual testing (see the most recent `HY-V3 Windows CUDA compile` run).
-Do not replace the normal PolyStrata executable or merge the PR yet.
-
-From a separate PowerShell directory containing the downloaded `strata-poly.exe`:
-
-```powershell
-.\\strata-poly.exe --model "C:\\Users\\yjhmo\\Desktop\\PolyStrata\\Hy-MT2-30B-A3B-Q4_K_M.gguf" --tokens 1 --max-new 1 --max-context 512 --prompt-batch 16 --stage-mib 64 --ram-experts-mib 4096 --no-draft --window 1
-```
-
-Run after stopping existing GPU inference servers to free memory. On Windows, you may need
-CUDA 13 DLL directories on `PATH` (the compiled engine links NVIDIA CUDA libraries).
-If DLLs are missing, capture the exact error instead of mixing random versions.
-This command tests only a single token as a load and inference smoke test. **One generated
-ID does not establish output correctness**; compare full greedy token sequences against
-llama.cpp with identical token IDs in a later step.
-
-
-## First real-device results (reported 2026-11-04 KST)
-
-Windows RTX 5060 8 GB, 32 GB system RAM, official
-`Hy-MT2-30B-A3B-Q4_K_M.gguf`, with CUDA 13 DLL path supplied from the
-PolyStrata Python venv. The GGUF inspector reported 48 layers, 1 dense,
-47 MoE, 766 tensors, 47 selection-bias tensors named `exp_probs_b`,
-no warnings/errors.
-
-`strata-poly.exe --tokens 1 --max-new 16 --max-context 512 --prompt-batch 16
---stage-mib 64 --ram-experts-mib 4096 --no-draft --window 1 --temperature 0`
-
-produced:
-- Loaded in 2.1 s (warm cache); initial one-token run loaded in 8.0 s.
-- 1,991 of 6,016 routed experts resident in 5.3 GiB of VRAM.
-- 12 CPU threads; 4,096 MiB explicitly reserved for external experts.
-- 16 generated token IDs: `206,341,245,636,13,206,478,628,206,15271,206,279,206,252,206,26887`.
-- Measured 7.86 generated tokens/s over a 16-token sample.
-- GPU expert hit share 48.5%, 478 experts swapped, 119.5 ms/token CPU-expert time.
-
-This establishes native loading and sustained token generation but **not**
-text correctness, translation quality or representative benchmark speed.
-The next gate is identical-token greedy parity with llama.cpp. Do not
-merge or replace the user's production PolyStrata environment yet.
-
-## One-window Japanese-to-Korean test (no llama.cpp)
-
-A **standalone Tkinter UI** is in `tools/hy_v3_translate_gui.py`. This is an
-experimental, direct client for `strata-poly.exe --serve`: it loads the real GGUF
-tokenizer, follows Tencent's one-user-message no-thinking template, uses the
-model's special EOS tokens, streams decoded Korean output, and keeps the
-native engine loaded between translations. It does **not** replace PolyStrata's
-production settings or require the regular web server.
-
-Run from the **experimental clone** on Windows:
-
-```powershell
-cd "$HOME\PolyStrata-HyV3-Test"
-git pull
-& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_translate_gui.py
-```
-
-The defaults match `Desktop\PolyStrata\strata-poly.exe` and
-`Desktop\PolyStrata\Hy-MT2-30B-A3B-Q4_K_M.gguf`. To override:
-
-```powershell
-python .\tools\hy_v3_translate_gui.py --exe "D:\test\strata-poly.exe" --model "D:\models\Hy-MT2-30B-A3B-Q4_K_M.gguf"
-```
-
-The UI finds the existing `nvidia\cu13\bin\x86_64` CUDA 13 pip-wheel DLL
-folder automatically. The Python interpreter must have the `regex` package,
-which the normal PolyStrata .venv already uses. A standard Python for Windows
-provides `tkinter`.
-
-The real Hy-MT2 Q4_K_M GGUF reports `tokenizer.ggml.pre=hunyuan-dense`.
-llama.cpp maps **hunyuan-dense** to the three-stage DeepSeek3/JOYAI
-pretokenization regex (different from the `hunyuan` variant's Qwen2-like
-regex). The experimental tokenizer now does the same, and the test GUI
-explicitly allows `hunyuan-dense`. Unsupported pretokenizers still
-stop with an error instead of silently corrupting the input.
-The Hunyuan-dense fix has regression coverage in `tests/test_hy_v3_tokenizer.py`. The visible
-text being translated can be checked directly in the GUI.
-
-First try a single simple Japanese sentence. Greedy temperature=0 is chosen
-for debugging; the 30B model card recommends 0.7 for normal use. **Native
-model output correctness is still unverified and the PR stays a draft.**
-
-
-## PolyStrata web UI for native Hy-MT2 (experimental, isolated)
-
-The experimental branch also offers the **normal PolyStrata web chat UI**,
-powered by the same native `strata-poly.exe --serve` binary used in the
-desktop translation test. The launcher extracts the tokenizer and model's
-own chat template from GGUF metadata, creates a self-contained run config
-under `.hy-v3-web/` (ignored by Git) and runs the existing
-`serve.server` web/API server. It does **not** replace the old PolyStrata
-server or overwrite the existing Gemma 4 model configuration.
-
-Windows PowerShell:
-
-```powershell
-# Close the Gemma 4 PolyStrata server and the HyV3 desktop translation window first (free VRAM).
 cd "$HOME\PolyStrata-HyV3-Test"
 git pull
 & "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py
 ```
 
-Open **http://127.0.0.1:18081/** if the browser doesn't open automatically.
-The OpenAI-compatible endpoint is
-**http://127.0.0.1:18081/v1/chat/completions**.
-The browser, API and server monitoring are the existing PolyStrata implementations.
-Close with `Ctrl+C`. The default server is bound to loopback only and the
-existing port 8080 is never changed.
+The default engine/model paths point to `Desktop\PolyStrata`. Override with
+`--exe` and `--model`. CUDA 13 DLLs are found in the existing Python venv.
+The model's tokenizer and chat template are extracted from its GGUF header.
+The generated config, tokenizer and log stay under the ignored `.hy-v3-web/`.
 
-The native test uses 4,096 context tokens (adjust up to 8,192 with
-`--context 8192` if memory permits), a **1,024-token prompt batch** (previously 32),
-**128 MiB staged experts** with a **2,048 MiB temporary expansion during long prompt reads**
-(using VRAM borrowed from the expert cache), and **6 prompt checkpoints** (previously 0),
-**all off-VRAM experts kept in host RAM by default** (instead of the
-former 4,096 MiB cap), no speculative MTP drafts,
-`--window 1` and the existing CUDA 13 DLL directory in the PolyStrata venv.
-The web default temperature is 0.7 (official 30B recommendation); choose
-0 in the web Chat settings to reproduce greedy GUI tests.
+Open http://127.0.0.1:18081/ ; the API is
+http://127.0.0.1:18081/v1/chat/completions . Close with Ctrl+C.
+The launcher does not overwrite the normal Gemma/Qwen run config or port 8080.
+Hy-MT2 has no default system prompt: put the translation instruction in the
+user message, followed by the Japanese text. Tools and vision are unverified.
 
-Hy-MT2 is **primarily a translation model** with **no default system prompt**.
-To ask for Korean output, include the explicit instruction in the message:
+Current experimental settings: 4096 context, prompt batch 1024, stage 128 MiB,
+temporary read stage up to 2048 MiB, 6 prompt checkpoints, all off-VRAM experts
+in RAM (`--ram-experts-mib -1`), temperature 0.7, no MTP drafts or lookup.
+The read stage borrows expert-cache VRAM during prefill; the engine restores
+that space afterwards. A bigger batch still needs more permanent scratch.
 
-```text
-Translate the following text into Korean. Note that you should only output the translated result without any additional explanation:
+For allocation failures try `--prompt-batch 512 --stage-mib 64 --stage-read-mib 0`,
+then batch 256. Restore the initial mode with
+`--prompt-batch 32 --stage-mib 64 --stage-read-mib 0 --prompt-cache 0`.
+Use `--ram-experts-mib 4096` to cap explicitly held host experts at 4 GiB.
+These are manual fallback settings, not an automatic OOM recovery guarantee.
+The -1 setting may reduce disk reads, but cannot remove CPU expert compute.
 
-今日はいい天気ですね。
-明日も晴れるといいな。
-```
+## What can affect speed
 
-For custom locations, run `python tools/hy_v3_web.py --help` and pass
-`--exe` or `--model`. The tokenizer/chat template are automatically
-extracted only if not already cached. This implementation uses the actual
-GGUF's Hunyuan template and native PolyStrata tokenization, not llama.cpp.
-**Important:** This integration is untested on the user's Windows machine
-and exact logits/text parity with llama.cpp is not yet established.
-Advanced features such as tools, vision and image generation have
-**not** been verified for HY-V3.
+- Q4_K_M and the earlier Qwen UD-Q3_K_M are different quantizations. Compare
+  cache occupancy/hit rates instead of treating total parameter count or A3B
+  as equal memory traffic. The official Hy checkpoint is about 18.2 GB.
+- Hy uses 48 full-attention layers, with 47 top-8 MoE blocks and a shared
+  expert. Qwen3.6 uses a different mixture of recurrent and full-attention
+  blocks. Equal active parameter labels do not imply equal decoding work.
+- Qwen's `fattn`/`fdec` kernel currently requires head dimension 256
+  (`src/poly/fattn.cu`); Hy has dimension 128 and uses `attend_batch`/`attend`.
+  Setting `STRATA_FATTN=1` alone does not accelerate Hy. Extending those kernels
+  is a separate native change requiring CUDA/HIP builds and numerical checks.
+- Batch 512/1024/2048 trades prefill work against expert-cache space. Measure
+  both prompt and generation speed; do not choose a winner by prompt speed alone.
+- Hy's fp16 KV cache uses 96 KiB per context position across all layers:
+  about 384 MiB at 4096 populated positions and 768 MiB at 8192, before scratch
+  and checkpoints. Longer sequences may displace experts as the cache grows.
+  Hy does not yet support the engine's Qwen q8_0 or Gemma int8 KV options.
 
-### RAM experiment (32 GiB host RAM, RTX 5060 8 GB)
-
-The first web test was around 15 GiB of total Windows RAM used versus around
-9 GiB without the model (a +6 GiB increase), because the launcher explicitly
-set `--ram-experts-mib 4096` and PolyStrata retained only 4 GiB of the ~10.7
-GiB of off-VRAM routed experts. Other expert pages may still be in Windows
-standby/file cache and not counted as the process's working set.
-
-As of this change, `tools/hy_v3_web.py` defaults to `--ram-experts-mib -1`
-(hold **all** off-VRAM expert weights in RAM, if available), following the
-engine's own uncapped default. No new C++ build is required: close the web
-server, `git pull` and restart the launcher. To restore the former memory-
-saving behavior, run the launcher with `--ram-experts-mib 4096`.
-
-Expect more process memory in Task Manager; note that Windows file standby
-cache is reported separately. Benchmarks must use the same prompt and output
-token count, and report prompt and generation speeds independently. Full RAM
-residency may reduce disk reads but does not guarantee speedup when CPU expert
-matrix operations are the bottleneck. Check overall free memory and avoid
-forcing Windows to page other apps out.
-
-### Prompt prefill optimization (2026-11-04)
-
-On the 100-line Japanese ASS test, Hy-MT2 returned 100 numbered Korean lines,
-1,327 output tokens, and 68.3 **generation** tok/s with the original experimental
-web options (`--prompt-batch 32 --stage-mib 64 --prompt-cache 0`). These figures
-say nothing about prefill speed; compare the web UI's **prompt tok/s** separately.
-The original PolyStrata setup uses the native poly engine's 1,024-token default
-and may select 2,048 when its VRAM estimation allows. It does **not** imply that
-Gemma 4 and Hy-MT2 have identical VRAM or speed characteristics.
-
-The isolated Hy-MT2 launcher now defaults to `--prompt-batch 1024`, `--stage-mib
-128`, `--stage-read-mib 2048`, and `--prompt-cache 6`. These values rely on
-native engine dynamic staging of expert cache VRAM during prefill; actual stability
-on RTX 5060 8GB and the resulting prompt throughput still need measurement.
-A larger prompt batch may reduce free expert cache VRAM and change decode speed.
-If startup reports VRAM allocation errors, do not rebuild the EXE; restart with:
+Two optional launcher controls reuse existing engine features without changing
+model math:
 
 ```powershell
-& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --prompt-batch 512 --stage-mib 64 --stage-read-mib 0
+# Learn on representative translation requests; restart to use the saved cache ranking.
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --learn-experts
+# Optional CPU thread comparison: replace N with this PC's physical-core count.
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_web.py --threads N
 ```
 
-If that still fails, try `--prompt-batch 256`. The original 32-token mode can be
-restored with `--prompt-batch 32 --stage-mib 64 --stage-read-mib 0 --prompt-cache 0`.
-Leave `--ram-experts-mib` at its fast unlimited default, `-1`.
-Before deciding to keep the defaults, compare prefill tok/s and decode tok/s on
-the same 100-line input and note memory. This is still experimental and does
-not change the installed Gemma 4 PolyStrata settings or merge the PR.
+`--learn-experts` passes a private `.hy-v3-web/hy-mt2-experts.bin` to the
+existing native `--expert-profile` loader/saver. Its counts are saved after
+answers (at most once per 10 seconds) and on clean exit. It may improve the
+initial resident expert selection for the translation workload; no speedup is
+claimed before measurement. Leave it off for the first batch sweep, so a
+changing learned profile does not confound the comparison. Do not reuse this
+file for other checkpoints. Thread count also remains automatic unless selected.
+
+## Controlled benchmark on the user's PC
+
+Save the same numbered Japanese text as UTF-8 `hy-input.txt`. Start the launcher
+with `--prompt-batch 512`; after testing, stop it and repeat at 1024 and 2048.
+Keep context, staging, RAM mode, temperature and source fixed. Do not run another
+client against the endpoint during measurements. In a second PowerShell window:
+
+```powershell
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_bench.py --input .\hy-input.txt --label hy-q4-b512 --output .\.hy-v3-web\bench\hy-b512.json --cancel --run
+```
+
+Change the label and output filename for each batch. Add `--long-input PATH`
+for a longer numbered sample; leave room for its output in the context, or
+record the context error explicitly. The client defaults to 2048 output tokens;
+increase `--max-tokens` and context together when required. Without `--run`, it
+prints a plan without connecting or writing results.
+
+The report keeps three fresh-prefix/warm request pairs, native prompt and decode
+timings, client TTFT and wall time, the request's expert VRAM hit rate, and sampled
+RAM/VRAM readings. Expert hit rate is the server's request-wide statistic, not a
+separately instrumented prefill/decode rate. Missing telemetry stays missing.
+Warm results are separate; excessive cold-prefix reuse is rejected. A truncated
+stream or `length` finish is not a successful complete translation. Numbered-line
+coverage checks missing/duplicate/reordered IDs; meaning still needs manual review.
+Reports contain translation text and machine details; they are local and not uploaded.
+
+The cancellation probe closes an active stream after 32 characters, checks the
+engine observed cancellation/disconnection, waits for idle, then sends a fresh
+translation. If the engine finishes before the disconnect, the probe is
+inconclusive and does not count as a cancellation pass. Partial results are saved
+after each request, including failures. Cancellation tests do not test process restart.
+
+For Gemma 4 and Qwen3.6 regression, start each model separately with its normal
+config and run the same client with `--url http://127.0.0.1:8080` and a model-specific
+label/output. Compare the old and new executable with the same checkpoint,
+config, prompt, and greedy output. Also retain each launcher/config and executable
+hash: labels alone do not establish the actual batch/build. Compare time for the
+whole correctly translated input as well as tok/s; tokenizers differ across models.
+
+## Release gates and remaining stability checks
+
+- [ ] Same-token greedy Hy output/logit comparison against llama.cpp, same GGUF.
+- [ ] Old/new Gemma 4 and Qwen3.6 real loading, complete translation, web UI and
+  streaming/non-streaming API, with tokenizer and settings held fixed.
+- [ ] 512/1024/2048 measurements with completed translations, cache hits and memory.
+- [ ] Long translation and at least ten consecutive varying requests, including A/B/A
+  cache restoration; inspect output and memory growth after warm-up.
+- [ ] Stop while reading a prompt and while generating; next request succeeds.
+- [ ] Ctrl+C, relaunch, and translate again; model process and VRAM are released.
+- [ ] Naturally encountered allocation failures or a bounded low-memory test: save
+  the error, stop the failed process, restart with the fallback settings and verify
+  a subsequent request. Capping expert RAM alone does not simulate system RAM OOM.
+  Do not allocate all system RAM/VRAM simply to force an error.
+- [ ] Latest Windows CUDA and Python CI pass; attach actual results and clear Draft.
+
+The current Python CI covers Gemma/Qwen settings and mock/fake-engine HTTP paths,
+not real GPU loading or translation quality. A container-only telemetry unit-test
+failure was reproduced on unchanged main: real cgroup memory replaced its fake
+psutil fixture. The fixture now isolates cgroup limits; production telemetry is unchanged.
+Local validation ran 480 existing Python tests (477 passed, 3 skipped because
+reference vocabularies were unavailable), 24 HY-V3 tests (all passed), and the
+standalone C++ router smoke test (passed). These are not real-device release gates.
+
+Local CPU checks:
+
+```sh
+python -m unittest discover -s tests -p 'test_hy_v3*.py' -v
+c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_router_test.cpp -o /tmp/hy_v3_router_test
+/tmp/hy_v3_router_test
+```
+
+`tools/inspect_hy_v3_gguf.py MODEL.gguf --json` checks headers/tensor inventory,
+including both expert-bias spellings, without reading model weights. Synthetic
+header, routing and source-wiring tests do not prove native inference correctness.

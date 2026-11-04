@@ -59,6 +59,19 @@ class HyV3WebConfigTest(unittest.TestCase):
             self.assertTrue(cfg["tokenizer"].endswith("tokenizer"))
             self.assertNotIn("8080", json.dumps(cfg))
             self.assertNotIn("0.0.0.0", cfg["host"])
+            self.assertNotIn("--expert-profile", cfg["args"])
+            self.assertNotIn("--threads", cfg["args"])
+
+    def test_expert_learning_and_cpu_tuning_are_opt_in(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            cfg = build_config(exe=root / "engine", model=root / "model.gguf",
+                               tokenizer=root / "tokenizer", runtime=root, port=18081,
+                               context=4096, lib_dirs=[], temperature=0,
+                               expert_profile=root / "hy-mt2-experts.bin", threads=6)
+            args = cfg["args"]
+            self.assertEqual(args[args.index("--expert-profile") + 1], str(root / "hy-mt2-experts.bin"))
+            self.assertEqual(args[args.index("--threads") + 1], "6")
 
     def test_cuda13_dll_search(self):
         with tempfile.TemporaryDirectory() as td:
