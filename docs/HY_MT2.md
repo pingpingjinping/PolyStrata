@@ -604,8 +604,83 @@ device gates. Shortened/reused prompts are not speed-benchmark samples.
 Local validation: all 48 Hy tests passed, including real loopback HTTP streaming
 with MockEngine, idle telemetry capture, sequence/hash checks, failed-cancel and
 incomplete-plan rejection, missing telemetry, partial-report persistence and
-no-network dry runs. These are client/offline checks; the user's actual GPU
-stability run remains pending.
+no-network dry runs. These are client/offline checks. The real-device results
+below show that the complete stability gate has not passed.
+
+### Device results: repeatable missing lines, 2026-11-05 KST
+
+The user supplied two complete 12-request reports on RTX 5060 8 GB / Windows /
+32 GB RAM, with the same input and corresponding prompt hashes. Both runs used
+batch 2048, 6 threads, context 4096, temperature 0, expert learning enabled and
+profiling off. In the first run CPU down32 and QKV slots were enabled (confirmed by the
+startup log/config); the second followed the command omitting both controls.
+The second launch log/config was not attached, so its flags are user-run context,
+not verified by the report label or engine version.
+
+| Request | Source IDs | Tuned output lines | Stock-command output lines |
+| --- | --- | --- | --- |
+| 4 (C) | 051–100 | 35/50 | 36/50 |
+| 6 (E) | 051–075 | 10/25 | 11/25 |
+| 9 (C repeat) | 051–100 | 35/50 | 39/50 |
+
+Every failed response received final SSE completion and finished with `stop`,
+well below the requested 2048 output-token budget. All six failed responses
+omitted 053–062 and 065; other missing IDs varied. Each run's four full-input A
+requests and the full-input recovery preserved all 100 IDs. Disconnect and the
+following recovery passed in both reports. This establishes an output-coverage
+failure in the tested combination; it does not identify a model-only cause or
+prove whole-model engine correctness. Turning off the two recent controls as
+instructed did not remove the reported pattern.
+
+For the four complete A requests only, tuned speeds were 84.9/82.4/85.2/77.7
+tok/s (median 83.65); stock-command speeds were 81.8/83.4/83.6/81.8 (median 82.6).
+These consecutive runs are not an alternating controlled performance study.
+Incomplete C/E outputs are excluded from these medians. System RAM first/last
+idle was 24.9/22.8 GiB and 24.3/21.5 GiB; whole-device sampled GPU peaks were
+8083 and 7942 MiB. These readings are not a leak-free or OOM-recovery verdict.
+
+### Step 6: isolate numbering and instruction effects (Python only)
+
+`tools/hy_v3_line_probe.py` selects IDs 051–075 from the original input by
+default. It sends four variants twice (eight requests), reversing the order in
+the second round:
+
+| Variant | IDs | Instruction |
+| --- | --- | --- |
+| original | 051–075 | Same as stability E |
+| renumbered | 001–025 | Same as stability E |
+| strict-original | 051–075 | Adds exact count/range and no omission/merging |
+| strict-renumbered | 001–025 | Same strengthened rules with matching range |
+
+The baseline prefix is exactly `[stability-E]` in every case; no variant-specific
+tag is added. Renumbering replaces only numbered block-start IDs, preserving
+dialogue and continuation lines. Reports map missing IDs back to the original
+source, retain prompts/full responses/hashes and checkpoint after each request.
+The source file, launcher, inference math and ordinary benchmark are unchanged.
+No new EXE is needed. Keep one server/settings combination throughout; avoid
+other generation requests. In a second PowerShell window:
+
+```powershell
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_line_probe.py --input .\.hy-v3-web\stability-input.txt --output ".\.hy-v3-web\stability\line-probe-$(Get-Date -Format yyyyMMdd-HHmmss).json" --run
+```
+
+Without `--run`, the client only validates the excerpt and shows a plan, with
+no network traffic or output file. `--start-id`/`--end-id` select another range;
+both endpoints must exist and input IDs must be unique/increasing. The same
+stream completion and strict ID checks from the benchmark apply. Transport or
+accounting errors stop and preserve prior records. This diagnostic does not
+cancel/restart or change the server. Exact repeats can reuse prompt state;
+cache/order effects and numerical parity need separate investigation. Passing
+after a prompt/ID change alone does not establish whether the model, template
+or engine caused earlier omissions. Real-device probe results are pending.
+
+Local validation: all 53 Hy Python tests passed, including five new probe tests
+for exact excerpt/continuation preservation, independent ID/instruction changes,
+repeated prompt identity, missing-ID mapping, no-network dry runs and partial
+result persistence. CI now runs the new probe tests explicitly. These are client
+checks without actual model inference; the existing benchmark file is unchanged.
 
 ### Remaining gates
 

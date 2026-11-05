@@ -19,6 +19,8 @@ on:
       - 'src/poly/main.cpp'
       - 'tools/hy_v3_bench.py'
       - 'tests/test_hy_v3_bench.py'
+      - 'tools/hy_v3_line_probe.py'
+      - 'tests/test_hy_v3_line_probe.py'
       - 'serve/models.py'
       - 'serve/server.py'
       - 'serve/test_server.py'
@@ -72,6 +74,8 @@ jobs:
           tools.test_setup_qwen36 tools.test_strata_tokenizer -v
       - name: Translation benchmark transport and accounting
         run: python -m unittest discover -s tests -p 'test_hy_v3_bench.py' -v
+      - name: Numbered-line prompt and ID diagnostics
+        run: python -m unittest discover -s tests -p 'test_hy_v3_line_probe.py' -v
       - name: Decode diagnostic log and opt-in wiring
         run: python -m unittest discover -s tests -p 'test_hy_v3_profile.py' -v
       - name: CPU scheduling option stays isolated
