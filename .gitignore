@@ -71,3 +71,6 @@ build-vision-cuda12.bat
 
 # local Windows HIP packaging output
 dist-hip/
+
+# Private Hy-MT2 experimental web tokenizer/config/cache; do not commit local settings
+/.hy-v3-web/

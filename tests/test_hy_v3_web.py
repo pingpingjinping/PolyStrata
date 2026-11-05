@@ -1,0 +1,95 @@
+"""Offline checks for Hy-MT2's standalone PolyStrata web launcher."""
+import json
+import pathlib
+import sys
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+from hy_v3_web import build_config, cuda13_lib_dirs  # noqa: E402
+
+
+class HyV3WebConfigTest(unittest.TestCase):
+    def test_isolated_server_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            cfg = build_config(
+                exe=root / "strata-poly.exe",
+                model=root / "Hy-MT2-30B-A3B-Q4_K_M.gguf",
+                tokenizer=root / "pack" / "tokenizer",
+                runtime=root,
+                port=18081,
+                context=4096,
+                lib_dirs=[str(root / "cuda13")],
+                temperature=0.7,
+            )
+            self.assertEqual(cfg["exe"], str(root / "strata-poly.exe"))
+            self.assertEqual(cfg["host"], "127.0.0.1")
+            self.assertEqual(cfg["port"], 18081)
+            self.assertEqual(cfg["arch"], "hy_v3")
+            self.assertEqual(cfg["sampling"]["temperature"], 0.7)
+            self.assertEqual(cfg["reasoning_effort"], "none")
+            self.assertIn("--serve", cfg["args"])
+            self.assertEqual(cfg["args"][cfg["args"].index("--model") + 1],
+                             str(root / "Hy-MT2-30B-A3B-Q4_K_M.gguf"))
+            self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "4096")
+            self.assertEqual(cfg["args"][cfg["args"].index("--ram-experts-mib") + 1], "-1")
+            self.assertEqual(cfg["args"][cfg["args"].index("--prompt-batch") + 1], "1024")
+            self.assertEqual(cfg["args"][cfg["args"].index("--stage-mib") + 1], "128")
+            self.assertEqual(cfg["args"][cfg["args"].index("--stage-read-mib") + 1], "2048")
+            self.assertEqual(cfg["args"][cfg["args"].index("--prompt-cache") + 1], "6")
+            cfg_tight = build_config(
+                exe=root / "strata-poly.exe", model=root / "Hy-MT2-30B-A3B-Q4_K_M.gguf",
+                tokenizer=root / "pack" / "tokenizer", runtime=root,
+                port=18081, context=4096, lib_dirs=[], temperature=0,
+                prompt_batch=256, stage_mib=64, stage_read_mib=0, prompt_cache=0)
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--prompt-batch") + 1], "256")
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--stage-mib") + 1], "64")
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--stage-read-mib") + 1], "0")
+            self.assertEqual(cfg_tight["args"][cfg_tight["args"].index("--prompt-cache") + 1], "0")
+            cfg_limited = build_config(
+                exe=root / "strata-poly.exe", model=root / "Hy-MT2-30B-A3B-Q4_K_M.gguf",
+                tokenizer=root / "pack" / "tokenizer", runtime=root,
+                port=18081, context=4096, lib_dirs=[], temperature=0,
+                ram_experts_mib=4096)
+            self.assertEqual(cfg_limited["args"][cfg_limited["args"].index("--ram-experts-mib") + 1], "4096")
+            self.assertIn("--no-draft", cfg["args"])
+            self.assertTrue(cfg["tokenizer"].endswith("tokenizer"))
+            self.assertNotIn("8080", json.dumps(cfg))
+            self.assertNotIn("0.0.0.0", cfg["host"])
+            self.assertNotIn("--expert-profile", cfg["args"])
+            self.assertNotIn("--threads", cfg["args"])
+
+    def test_expert_learning_and_cpu_tuning_are_opt_in(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            cfg = build_config(exe=root / "engine", model=root / "model.gguf",
+                               tokenizer=root / "tokenizer", runtime=root, port=18081,
+                               context=4096, lib_dirs=[], temperature=0,
+                               expert_profile=root / "hy-mt2-experts.bin", threads=6)
+            args = cfg["args"]
+            self.assertEqual(args[args.index("--expert-profile") + 1], str(root / "hy-mt2-experts.bin"))
+            self.assertEqual(args[args.index("--threads") + 1], "6")
+
+    def test_cuda13_dll_search(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            venv = root / ".venv"
+            exe = root / "strata-poly.exe"
+            interpreter = venv / "Scripts" / "python.exe"
+            dll = venv / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
+            dll.mkdir(parents=True)
+            (dll / "cublas64_13.dll").touch()
+            self.assertIn(str(dll), cuda13_lib_dirs(exe, interpreter))
+            (dll / "cublas64_13.dll").unlink()
+            self.assertNotIn(str(dll), cuda13_lib_dirs(exe, interpreter))
+
+    def test_server_native_architecture_recognized(self):
+        contents = (ROOT / "serve" / "models.py").read_text(encoding="utf-8")
+        self.assertIn('"hy_v3": "hy_v3"', contents)
+
+
+if __name__ == "__main__":
+    unittest.main()

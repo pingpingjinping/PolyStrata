@@ -81,6 +81,9 @@ struct Options {
                                   ///< from it or the disk when a token routes to them.  Below 0: all of them
     bool stay_near = true;        ///< with several NUMA nodes, keep the CPU threads on the one that holds the experts
     bool graphs = true;           ///< a token's fixed launches are recorded once, a CUDA graph a layer, and replayed
+    bool hy_v3_profile = false;   ///< opt-in single-sequence CUDA HY-V3 decode timing; adds timing events to graphs
+    bool hy_v3_cpu_down32 = false; ///< opt-in HY-V3 CPU scheduling: 32 down rows per task, stock 16 otherwise
+    bool hy_v3_qkv_slots = false; ///< opt-in single-token HY-V3 Q/K/(Q4 V) grouped projections
     bool kv_grow = true;          ///< the attention caches get VRAM as the sequence grows, where the card can map it
                                   ///< so; false: for the whole context at load, as the expert cache gets the rest
     KvFmt kv_format = KvFmt::kFp16;   ///< the K and V caches' format; fp16 by default (byte-identical path)
@@ -344,6 +347,14 @@ public:
     size_t trim_kv(int64_t end);
     void save_profile() const;
 
+    /// Optional HY-V3 decode diagnostics. Called after prefill, after each
+    /// completed one-token eval, and after generation; other models keep no-op hooks.
+    bool decode_profiling() const { return opt_.hy_v3_profile; }
+    virtual void decode_profile_begin() {}
+    virtual void decode_profile_prepare() {}
+    virtual void decode_profile_sample() {}
+    virtual void decode_profile_end(double wall_ms) { (void) wall_ms; }
+
     /// Options::batch + 1 sequences, each with its own position, recurrent state, attention rows and pictures.  One
     /// is bound at a time, and every call above but step() is the bound one's.  bind(s) leaves the bound one as it
     /// is and goes on with sequence s where it was left.  Not between window() and keep().
@@ -533,6 +544,7 @@ protected:
     int room_key(int n) const;
     void* dmalloc(size_t bytes, const char* what);
     void* hmalloc(size_t bytes, const char* what);
+    void* timing_event();   ///< timing-enabled event, owned until after the recorded graphs are destroyed
     void hfree(void* p);
     std::vector<uint8_t> ram_keep(const std::vector<float>* lately = nullptr) const;
     bool read_file(uint8_t* dst, const uint8_t* src, size_t n) const;
@@ -607,6 +619,7 @@ protected:
     void* ev_row_[8] = {}; ///< one for each token a window can have
     std::vector<void*> dev_allocs_, host_allocs_;
     std::vector<void*> graphs_;   ///< every recorded graph, to destroy
+    std::vector<void*> timing_events_;   ///< opt-in diagnostics only
     std::map<std::vector<int>, void*> passes_;   ///< a call's layers recorded as one (run()): by its tokens and
                                                  ///< every layer's head_key()
     void* tail_ = nullptr;        ///< one token's launches from the last layer to the logits, recorded

@@ -9,6 +9,7 @@
 #include "kolibri1.hpp"
 #include "lfm2moe.hpp"
 #include "flint.hpp"
+#include "hy_v3.hpp"
 #include "mmq.hpp"
 #include "qwen35.hpp"
 #include "runtime.hpp"
@@ -552,6 +553,7 @@ Engine::~Engine() {
     for (int j = 0; j < n_swap_; ++j)
         if (swap_[(size_t) j].done) cudaEventDestroy(swap_[(size_t) j].done);
     for (void* g : graphs_) cudaGraphExecDestroy((cudaGraphExec_t) g);
+    for (void* e : timing_events_) cudaEventDestroy((cudaEvent_t) e);
     blas_destroy(blas_);
     if (swap_st_) cudaStreamDestroy(cs(swap_st_));
     if (up_) cudaStreamDestroy(cs(up_));
@@ -569,6 +571,14 @@ void* Engine::dmalloc(size_t bytes, const char* what) {
     }
     dev_allocs_.push_back(p);
     return p;
+}
+
+void* Engine::timing_event() {
+    cudaEvent_t event = nullptr;
+    ck(cudaEventCreate(&event), "HY-V3 timing event");
+    try { timing_events_.push_back(event); }
+    catch (...) { cudaEventDestroy(event); throw; }
+    return event;
 }
 
 void* Engine::hmalloc(size_t bytes, const char* what) {
@@ -1177,6 +1187,20 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
     const Shards file(o.model);
     const MetaValue* arch = file.get("general.architecture");
     const std::string name = arch ? arch->s : std::string();
+    if (o.hy_v3_cpu_down32 && name != "hy_v3")
+        throw std::runtime_error("--hy-v3-cpu-down32 is an experimental HY-V3-only CPU scheduling option");
+    if (o.hy_v3_cpu_down32)
+        std::fprintf(stderr, "strata-poly: HY-V3 CPU down tasks: 32 rows (experimental; stock 16)\n");
+    if (o.hy_v3_qkv_slots && (name != "hy_v3" || !o.layer_split.empty() || o.batch != 0 || o.window != 1))
+        throw std::runtime_error("--hy-v3-qkv-slots requires a HY-V3 model, one GPU/sequence and --window 1");
+    if (o.hy_v3_qkv_slots)
+        std::fprintf(stderr, "strata-poly: HY-V3 QKV slots enabled (experimental; single-token projections)\n");
+    if (o.hy_v3_profile && (name != "hy_v3" || !o.layer_split.empty() || o.batch != 0 || o.window != 1 || o.dump))
+        throw std::runtime_error("--hy-v3-profile requires a HY-V3 model, one GPU/sequence, --window 1 and no --dump");
+#if defined(STRATA_USE_HIP)
+    if (o.hy_v3_profile) throw std::runtime_error("--hy-v3-profile is CUDA-only in this version");
+    if (o.hy_v3_qkv_slots) throw std::runtime_error("--hy-v3-qkv-slots is CUDA-only in this version");
+#endif
     // Clover is a qwen35moe model trained to also guess a block of tokens at once (Qwen35)
     const bool qwen35 = name == "qwen35moe" || name == "clover_moe";
     if (o.kv_format == KvFmt::kQ8_0 && !qwen35 && name != "kolibri1")
@@ -1197,6 +1221,7 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
         if (name == "deepseek4") return std::make_unique<DeepSeek4>();
         if (name == "lfm2moe") return std::make_unique<Lfm2Moe>();
         if (name == "flint") return std::make_unique<Flint>();
+        if (name == "hy_v3") return std::make_unique<HyV3>(); // experimental: parity testing pending
         if (name == "kolibri1") return std::make_unique<Kolibri1>();
         throw std::runtime_error(o.model + " is a '" + name + "' model, which this engine does not run");
     };
@@ -3349,8 +3374,12 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 if (!pool_help()) std::this_thread::yield();
             }
         };
-        cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.u_type, (int) L.d_type, n_embd_, n_ff_exp_,
-                    h_x_ + (size_t) at * e_row, limit, gelu_, cpu, meanwhile, any_late ? late : nullptr, &wait);
+        if (opt_.hy_v3_cpu_down32)
+            cpu_experts_down32(*workers_, host, n_host, m, (int) L.gu_type, (int) L.u_type, (int) L.d_type, n_embd_, n_ff_exp_,
+                              h_x_ + (size_t) at * e_row, limit, gelu_, cpu, meanwhile, any_late ? late : nullptr, &wait);
+        else
+            cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.u_type, (int) L.d_type, n_embd_, n_ff_exp_,
+                        h_x_ + (size_t) at * e_row, limit, gelu_, cpu, meanwhile, any_late ? late : nullptr, &wait);
         pool_reads_.clear();
         stats_.cpu_ms += ms_since(t0);
     }

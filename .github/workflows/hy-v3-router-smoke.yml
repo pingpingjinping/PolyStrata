@@ -1,0 +1,105 @@
+name: HY-V3 compatibility smoke tests
+on:
+  pull_request:
+    paths:
+      - 'src/poly/hy_v3_router.hpp'
+      - 'tests/hy_v3_router_test.cpp'
+      - 'tools/inspect_hy_v3_gguf.py'
+      - 'tools/strata_tokenizer.py'
+      - 'tools/hy_v3_translate_gui.py'
+      - 'tools/hy_v3_web.py'
+      - 'tools/hy_v3_profile_log.py'
+      - 'tests/test_hy_v3_profile.py'
+      - 'tests/hy_v3_profile_test.cpp'
+      - 'src/poly/hy_v3_profile.hpp'
+      - 'src/poly/hy_v3_qkv.hpp'
+      - 'tests/hy_v3_qkv_slots_test.cpp'
+      - 'tests/test_hy_v3_qkv_slots.py'
+      - 'src/poly/engine.hpp'
+      - 'src/poly/main.cpp'
+      - 'tools/hy_v3_bench.py'
+      - 'tests/test_hy_v3_bench.py'
+      - 'tools/hy_v3_line_probe.py'
+      - 'tests/test_hy_v3_line_probe.py'
+      - 'serve/models.py'
+      - 'serve/server.py'
+      - 'serve/test_server.py'
+      - 'tests/test_hy_v3_tokenizer.py'
+      - 'tests/test_hy_v3_web.py'
+      - 'src/poly/hy_v3.hpp'
+      - 'src/poly/hy_v3.cpp'
+      - 'src/poly/engine.cpp'
+      - 'src/poly/cpu_experts.cpp'
+      - 'src/poly/cpu_experts.hpp'
+      - 'tests/hy_v3_cpu_down32_test.cpp'
+      - 'tests/test_hy_v3_cpu_down32.py'
+      - 'CMakeLists.txt'
+      - 'tests/test_hy_v3_native_wiring.py'
+      - 'tests/test_hy_v3_gguf.py'
+      - '.github/workflows/hy-v3-router-smoke.yml'
+  workflow_dispatch:
+jobs:
+  router-and-header:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run router test
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_router_test.cpp -o /tmp/hy_v3_router_test
+          /tmp/hy_v3_router_test
+      - name: Decode profile accounting (CPU only)
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 tests/hy_v3_profile_test.cpp -o /tmp/hy_v3_profile_test
+          /tmp/hy_v3_profile_test
+      - name: Check native HY-V3 backend wiring (source-only)
+        run: python -m unittest discover -s tests -p 'test_hy_v3_native_wiring.py' -v
+      - name: Inspect synthetic HY-V3 GGUF headers
+        run: python -m unittest discover -s tests -p 'test_hy_v3_gguf.py' -v
+      - name: Syntax check native translation test GUI
+        run: python -m py_compile tools/hy_v3_translate_gui.py tools/hy_v3_web.py tools/strata_tokenizer.py serve/server.py serve/models.py
+      - name: Regression test Hunyuan dense pre-tokenizer
+        run: |
+          python -m pip install --disable-pip-version-check regex
+          python -m unittest discover -s tests -p 'test_hy_v3_tokenizer.py' -v
+      - name: Validate isolated HY-V3 web launcher
+        run: python -m unittest discover -s tests -p 'test_hy_v3_web.py' -v
+      - name: Install Python web regression dependencies
+        run: python -m pip install --disable-pip-version-check jinja2 psutil
+      - name: Existing Gemma and Qwen web/config regression (no GPU)
+        run: >-
+          python -m unittest serve.test_gemma serve.test_q36_config
+          serve.test_models serve.test_server serve.test_control_cancel
+          serve.test_context_overflow serve.test_fatal_recovery
+          serve.test_runconfig serve.test_request_accounting
+          tools.test_setup_qwen36 tools.test_strata_tokenizer -v
+      - name: Translation benchmark transport and accounting
+        run: python -m unittest discover -s tests -p 'test_hy_v3_bench.py' -v
+      - name: Numbered-line prompt and ID diagnostics
+        run: python -m unittest discover -s tests -p 'test_hy_v3_line_probe.py' -v
+      - name: Decode diagnostic log and opt-in wiring
+        run: python -m unittest discover -s tests -p 'test_hy_v3_profile.py' -v
+      - name: CPU scheduling option stays isolated
+        run: python -m unittest discover -s tests -p 'test_hy_v3_cpu_down32.py' -v
+      - name: QKV grouping option and GPU-check launcher transport
+        run: python -m unittest discover -s tests -p 'test_hy_v3_qkv_slots.py' -v
+  cpu-down32-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the same pinned ggml used by the native build
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 3cf03257f219afbe7334045ff7c6a06ac68c627d
+          path: .ci-llamacpp
+      - name: Configure CPU-only scheduling parity test
+        run: >-
+          cmake -S . -B build-hy-cpu -DSTRATA_ENABLE_CUDA=OFF
+          -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_TESTS=OFF
+          -DSTRATA_BUILD_HY_CPU_TEST=ON -DSTRATA_PORTABLE=ON
+          -DSTRATA_GGML_DIR=${{ github.workspace }}/.ci-llamacpp
+          -DCMAKE_BUILD_TYPE=Release
+      - name: Build real quantized CPU expert test
+        run: cmake --build build-hy-cpu --target poly_hy_cpu_down32_test --parallel 2
+      - name: Compare 16-row and 32-row output bits and callbacks
+        run: ./build-hy-cpu/poly_hy_cpu_down32_test

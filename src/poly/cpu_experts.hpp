@@ -74,4 +74,12 @@ void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, in
                  const std::function<void()>* meanwhile = nullptr, const uint8_t* late = nullptr,
                  const std::function<void(int)>* wait = nullptr);
 
+/// Experimental HY-V3 scheduling: down products take 32 output rows per task
+/// rather than 16. Mathematical operations and per-row reduction order match
+/// cpu_experts(); other models keep calling the original entry point.
+void cpu_experts_down32(Workers& workers, const CpuExpert* experts, int n, int rows, int gu_type, int u_type, int d_type,
+                       int n_embd, int n_ff, const float* x, float limit, bool gelu, float* out,
+                       const std::function<void()>* meanwhile = nullptr, const uint8_t* late = nullptr,
+                       const std::function<void(int)>* wait = nullptr);
+
 }  // namespace strata::poly
