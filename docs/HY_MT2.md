@@ -524,6 +524,89 @@ Save web Temperature 0 as well. Leave profiling off for normal use. These
 measurement/documentation updates require no new executable; engine/launcher
 defaults remain unchanged and experimental controls are still opt-in.
 
+### Step 5: consecutive-request and disconnect/recovery check (Python only)
+
+Keep the current tuned server running, with profiling off. The new opt-in
+`--stability` mode in `tools/hy_v3_bench.py` uses its loopback API and requires
+no new EXE, configuration changes or model restart. Do not send requests from
+another client during this check: request accounting must belong to this run.
+
+Save the 100 numbered Japanese source lines as UTF-8
+`.hy-v3-web/stability-input.txt` under the source checkout. The source and
+result files stay local/ignored; no text is committed or uploaded by this tool.
+In a second PowerShell window:
+
+```powershell
+cd "$HOME\PolyStrata-HyV3-Test"
+git pull
+& "$HOME\Desktop\PolyStrata\.venv\Scripts\python.exe" .\tools\hy_v3_bench.py --input .\.hy-v3-web\stability-input.txt --stability --label hy-5060-stability --output ".\.hy-v3-web\stability\hy-$(Get-Date -Format yyyyMMdd-HHmmss).json" --run
+```
+
+Without `--run`, this prints a plan with no network traffic or result file.
+Normal speed mode and its cold/warm accounting remain available without
+`--stability`; `--runs` only controls that speed mode.
+
+For 100 source lines, the ten-request sequence is **A/B/A/C/D/E/A/F/C/A**:
+
+| Label | Numbered source excerpt |
+| --- | --- |
+| A | All 100 lines |
+| B | First half (1–50) |
+| C | Second half (51–100) |
+| D | Second quarter (26–50) |
+| E | Third quarter (51–75) |
+| F | Fourth quarter (76–100) |
+
+Each A repeat uses the same complete prompt and the original IDs. Continuation
+lines stay with their numbered block; text before the first ID is excluded
+from the stability excerpts. Other input lengths are split proportionally;
+at least four unique numbered lines are required. This exercises different
+prompt lengths and cache switching/restoration within one source. It is not
+a complete episode, a multi-episode corpus or a numerical-parity check.
+
+The tool then disconnects a full-input stream after 32 output characters,
+waits for idle, and sends a fresh-prefix recovery request: **12 HTTP requests,
+11 completed translations plus one cancellation probe**. Cancellation only
+counts when the server records `cancel`/`disconnect`; a response that finishes
+before cancellation can be observed is not a pass. Prompt-reading cancellation
+and the web UI stop button are not separately exercised by this probe.
+
+Every completed translation must finish with `stop`, receive the final SSE
+marker, include Hangul, and preserve all expected IDs in order without missing,
+duplicate or extra IDs. Meaning still needs manual review. Reports record
+input/prompt hashes and full outputs, timings, request metrics, active machine
+samples, and before/after-idle machine snapshots. Checkpoints are saved after
+every request, so earlier successful records survive a later error. A transport,
+idle or accounting error stops the sequence and saves the failed index too.
+
+The schema-2 summary reports planned/recorded counts, completed translations,
+failed indices, observed cancellation and recovery, and
+`all_request_checks_passed`. A complete successful run has 12 recorded requests,
+11 completed translations, no failed indices, and all three request-check
+booleans true. Individual request/ID failures do not certify engine failure;
+inspect the recorded reason and output.
+
+Memory summaries are **system RAM used (GiB)** and **whole-device GPU memory
+used (MiB)** from `/v1/status`, not engine RSS. First/last idle values are taken
+after completed requests; sampled peaks and raw snapshots are retained.
+Missing readings remain null. Sampling can lag and normal model/graph/prompt
+cache warm-up can grow memory. `memory_review_required` therefore stays true:
+there is no automatic leak threshold or memory-stability pass. Inspect the
+trend after warm-up, alongside other applications' activity.
+
+This mode does not stop/restart the process, force low memory, or change its
+context. `--long-input PATH` can append a separate numbered request within
+the configured budget; naturally returned context/memory errors are recorded,
+not silently treated as successful long translation. Long real subtitle work,
+process restart/release and bounded allocation failure/recovery remain separate
+device gates. Shortened/reused prompts are not speed-benchmark samples.
+
+Local validation: all 48 Hy tests passed, including real loopback HTTP streaming
+with MockEngine, idle telemetry capture, sequence/hash checks, failed-cancel and
+incomplete-plan rejection, missing telemetry, partial-report persistence and
+no-network dry runs. These are client/offline checks; the user's actual GPU
+stability run remains pending.
+
 ### Remaining gates
 
 - [ ] Same-token greedy Hy output/logit comparison against llama.cpp, same GGUF.

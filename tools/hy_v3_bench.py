@@ -4,12 +4,15 @@
 Restart hy_v3_web.py with --prompt-batch 512/1024/2048 between runs. This
 client never edits a config or changes a running engine's batch size.
 Use the same UTF-8 numbered Japanese input for every model and batch.
+With --stability, keep the server running for 10 varying whole/partial-input
+requests with exact A/B/A repeats, then a disconnect/recovery probe instead.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 import re
 import statistics
 import threading
@@ -88,8 +91,16 @@ def idle(base, timeout=30):
     raise RuntimeError("server did not return to idle after the request")
 
 
-def measure(base, model, prompt, source, max_tokens, timeout, cancel_after=None):
+def machine_snapshot(base):
+    try:
+        return get(base, "/v1/status", timeout=2).get("machine")
+    except (OSError, ValueError):
+        return None  # Telemetry absence must not fail a completed translation.
+
+
+def measure(base, model, prompt, source, max_tokens, timeout, cancel_after=None, *, capture_idle_memory=False):
     before = idle(base)
+    machine_before = machine_snapshot(base) if capture_idle_memory else None
     stop = threading.Event()
     samples = []
 
@@ -117,6 +128,9 @@ def measure(base, model, prompt, source, max_tokens, timeout, cancel_after=None)
     result["engine_request"] = after["requests"][0]
     result["coverage"] = coverage(source, result["text"])
     result["machine_samples"] = samples
+    if capture_idle_memory:
+        result["machine_before"] = machine_before
+        result["machine_after"] = machine_snapshot(base)
     result["ok"] = (result["cancelled_by_client"] and result["engine_request"].get("finish") in ("cancel", "disconnect")
                     if cancel_after is not None else
                     bool(result["text"]) and result["done_received"] and result["finish"] == "stop"
@@ -140,6 +154,60 @@ def summary(records):
             "note": "Engine expert hit_rate is request-wide; warm runs and truncated outputs are excluded."}
 
 
+def stability_jobs(source, make_prompt):
+    """Ten varying requests with exact A/B/A repeats; input text stays private."""
+    starts = [m.start() for m in re.finditer(r"(?m)^[ \t]*\[\d+\]", source)]
+    if len(starts) < 4:
+        raise ValueError("stability mode needs at least four numbered dialogue lines")
+    blocks = [source[a:b] for a, b in zip(starts, starts[1:] + [len(source)])]
+    ids = re.findall(r"(?m)^[ \t]*\[(\d+)\]", source)
+    if len(ids) != len(set(ids)):
+        raise ValueError("stability input has duplicate line IDs")
+    # Extract numbered blocks only; retain continuation lines inside each block.
+    full = "".join(blocks)
+    mid, q1, q3 = len(blocks) // 2, len(blocks) // 4, 3 * len(blocks) // 4
+    texts = {"A": full, "B": "".join(blocks[:mid]), "C": "".join(blocks[mid:]),
+             "D": "".join(blocks[q1:mid]), "E": "".join(blocks[mid:q3]), "F": "".join(blocks[q3:])}
+    order = ("A", "B", "A", "C", "D", "E", "A", "F", "C", "A")
+    return [("stability-" + tag, make_prompt(texts[tag], "stability-" + tag), texts[tag], None) for tag in order]
+
+
+def stability_summary(records, planned):
+    translations = [r for r in records if r.get("kind") != "cancel"]
+    cancelled = next((r for r in records if r.get("kind") == "cancel"), None)
+    recovery = next((r for r in records if r.get("kind") == "after-cancel"), None)
+    idle_samples = [r["machine_after"] for r in translations if isinstance(r.get("machine_after"), dict)]
+    active = [s for r in records for s in r.get("machine_samples", []) if isinstance(s, dict)]
+
+    def memory(section, key):
+        def values(samples):
+            found = []
+            for s in samples:
+                part = s.get(section)
+                value = part.get(key) if isinstance(part, dict) else None
+                if type(value) in (int, float) and math.isfinite(value):
+                    found.append(value)
+            return found
+        idle_values, samples = values(idle_samples), values(active)
+        observed = idle_values + samples
+        return {"first_idle_after_request": idle_values[0] if idle_values else None,
+                "last_idle_after_request": idle_values[-1] if idle_values else None,
+                "peak_sampled": max(observed) if observed else None}
+
+    return {"planned_requests": planned, "recorded_requests": len(records),
+            "completed_translations": sum(bool(r.get("ok")) for r in translations),
+            "failed_request_indices": [i + 1 for i, r in enumerate(records) if not r.get("ok")],
+            "cancellation_observed": bool(cancelled and cancelled.get("ok")) if cancelled else None,
+            "recovery_ok": bool(recovery and recovery.get("ok")) if recovery else None,
+            "all_request_checks_passed": bool(len(records) == planned and all(r.get("ok") for r in records)
+                                              and cancelled and cancelled.get("ok") and recovery and recovery.get("ok")),
+            "ram_used_gib_system": memory("ram", "used_gib"),
+            "gpu_used_mib_device": memory("gpu", "used_mib"),
+            "memory_review_required": True,
+            "note": "Request/numbered-line checks only. Memory is system/device-wide, may lag, and is not a leak verdict. "
+                    "Translation meaning, long input, process restart and low-memory behavior need separate validation."}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default="http://127.0.0.1:18081")
@@ -147,7 +215,9 @@ def main(argv=None):
     ap.add_argument("--long-input", type=Path, help="optional longer numbered text for a separate stability request")
     ap.add_argument("--label", required=True, help="e.g. hy-q4-b512 or gemma4-baseline")
     ap.add_argument("--output", type=Path, required=True)
-    ap.add_argument("--runs", type=int, default=3)
+    ap.add_argument("--runs", type=int, default=3, help="cold/warm pairs in speed mode; stability has a fixed sequence")
+    ap.add_argument("--stability", action="store_true",
+                    help="10 varying whole/partial-input requests with A/B/A repeats, then cancel/recovery; not a speed sweep")
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--cancel", action="store_true", help="disconnect after 32 output characters, then probe recovery")
@@ -162,7 +232,27 @@ def main(argv=None):
     source = args.input.read_text(encoding="utf-8-sig")
     if not re.search(r"(?m)^\s*\[\d+\]", source):
         ap.error("input must contain numbered [001] dialogue lines")
+    instruction = "Translate every numbered line into Korean. Preserve all [NNN] IDs in order. Output only the translation."
+    def prompt(text, tag):
+        return f"[{tag}] {instruction}\n\n{text}"
+
+    jobs = []
+    if args.stability:
+        if args.runs != 3:
+            ap.error("--runs applies to speed mode; --stability uses a fixed 10-request sequence")
+        try:
+            jobs = stability_jobs(source, prompt)
+        except ValueError as exc:
+            ap.error(str(exc))
+    else:
+        for run in range(args.runs):
+            p = prompt(source, f"bench-{run}")
+            jobs.extend([("cold", p, source, None), ("warm", p, source, None)])
     if not args.run:
+        if args.stability:
+            print(f"Plan: {args.label}, {len(jobs) + 2 + bool(args.long_input)} requests (10 varying + cancel/recovery; "
+                  f"long={bool(args.long_input)}). No network traffic or output files. Add --run to test.")
+            return 0
         print(f"Plan: {args.label}, {args.runs} cold + warm pairs; cancel={args.cancel}; "
               f"long={bool(args.long_input)}. No network traffic or output files. Add --run to measure.")
         return 0
@@ -173,33 +263,34 @@ def main(argv=None):
               "records": [], "limitations": ["Translation meaning needs manual review.",
               "Label does not verify batch size: retain the matching launcher log/config.",
               "OOM and process restart need separate real-device tests."]}
-    # A fixed tag per run gives the same test corpus across batch sizes. Placing
-    # it first defeats long prefix reuse; verify cache_n rather than assuming.
-    instruction = "Translate every numbered line into Korean. Preserve all [NNN] IDs in order. Output only the translation."
-    def prompt(text, tag):
-        return f"[{tag}] {instruction}\n\n{text}"
-
+    if args.long_input:
+        text = args.long_input.read_text(encoding="utf-8-sig")
+        jobs.append(("long", prompt(text, "long"), text, None))
+    if args.cancel or args.stability:
+        cancel_source = jobs[0][2] if args.stability else source
+        jobs.extend([("cancel", prompt(cancel_source, "cancel"), cancel_source, 32),
+                     ("after-cancel", prompt(cancel_source, "recovery"), cancel_source, None)])
+    if args.stability:
+        report.update(schema=2, mode="stability", planned_requests=len(jobs))
+        report["limitations"] += ["Memory is system/device-wide telemetry; no automatic leak pass/fail.",
+                                  "Whole/partial excerpts of one input are not full-episode or broad-corpus validation."]
+    # Speed runs use fixed early tags across batches; stability deliberately
+    # reuses exact A/B/C prompts to exercise state restoration.
     def save():
-        report["summary"] = summary(report["records"])
+        report["summary"] = (stability_summary(report["records"], len(jobs)) if args.stability
+                             else summary(report["records"]))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         temp = args.output.with_suffix(args.output.suffix + ".tmp")
         temp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(args.output)
 
-    jobs = []
-    for run in range(args.runs):
-        p = prompt(source, f"bench-{run}")
-        jobs.extend([("cold", p, source, None), ("warm", p, source, None)])
-    if args.long_input:
-        text = args.long_input.read_text(encoding="utf-8-sig")
-        jobs.append(("long", prompt(text, "long"), text, None))
-    if args.cancel:
-        jobs.extend([("cancel", prompt(source, "cancel"), source, 32),
-                     ("after-cancel", prompt(source, "recovery"), source, None)])
     failed = False
     for kind, p, text, cancel in jobs:
         try:
-            record = measure(base, model, p, text, args.max_tokens, args.timeout, cancel)
+            if args.stability:
+                record = measure(base, model, p, text, args.max_tokens, args.timeout, cancel, capture_idle_memory=True)
+            else:
+                record = measure(base, model, p, text, args.max_tokens, args.timeout, cancel)
             # At most a short common prefix is expected between different runs.
             timing = record.get("timings") or {}
             if kind == "cold" and timing.get("cache_n", 0) > 64:
@@ -207,13 +298,20 @@ def main(argv=None):
         except Exception as exc:
             record = {"ok": False, "error": str(exc)}
         record["kind"] = kind
+        if args.stability:
+            record.update(request_index=len(report["records"]) + 1,
+                          input_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                          prompt_sha256=hashlib.sha256(p.encode()).hexdigest())
         report["records"].append(record)
         failed |= not record["ok"]
         save()  # Keep successful results even if the next request fails or OOMs.
-        print(f"{args.label} {kind}: {'OK' if record['ok'] else 'FAILED'}", flush=True)
+        progress = f" {len(report['records'])}/{len(jobs)}" if args.stability else ""
+        print(f"{args.label}{progress} {kind}: {'OK' if record['ok'] else 'FAILED'}", flush=True)
         if record.get("error"):
             break
     print(json.dumps(report["summary"], indent=2))
+    if args.stability:
+        print(f"Saved: {args.output.resolve()}")
     return int(failed)
 
 
